@@ -90,12 +90,14 @@ const ACCENT_COLORS = [
 // MÚSICA LO-FI — URLs de streams públicos (substitua por seus assets)
 // ═══════════════════════════════════════════════════════════════════════════
 
+const MUSIC_BASE = 'https://agenda-planner-production.up.railway.app/music';
+
 const LOFI_TRACKS = [
-  { id:'lofi1', name:'lukrembo — rose',    icon:'moon',    bpm:'Lo-Fi', url:'http://10.0.0.165:3000/music/rose.mp3'    },
-  { id:'lofi2', name:'lukrembo — wine',    icon:'coffee',  bpm:'Lo-Fi', url:'http://10.0.0.165:3000/music/wine.mp3'    },
-  { id:'lofi3', name:'lukrembo — butter',  icon:'feather', bpm:'Lo-Fi', url:'http://10.0.0.165:3000/music/butter.mp3'  },
-  { id:'lofi4', name:'lukrembo — teapot',  icon:'coffee',  bpm:'Lo-Fi', url:'http://10.0.0.165:3000/music/teapot.mp3'  },
-  { id:'lofi5', name:'lukrembo — rudolph', icon:'tree',    bpm:'Lo-Fi', url:'http://10.0.0.165:3000/music/rudolph.mp3' },
+  { id:'lofi1', name:'lukrembo — rose',    icon:'moon',    bpm:'Lo-Fi', url:`${MUSIC_BASE}/rose.mp3`    },
+  { id:'lofi2', name:'lukrembo — wine',    icon:'coffee',  bpm:'Lo-Fi', url:`${MUSIC_BASE}/wine.mp3`    },
+  { id:'lofi3', name:'lukrembo — butter',  icon:'feather', bpm:'Lo-Fi', url:`${MUSIC_BASE}/butter.mp3`  },
+  { id:'lofi4', name:'lukrembo — teapot',  icon:'coffee',  bpm:'Lo-Fi', url:`${MUSIC_BASE}/teapot.mp3`  },
+  { id:'lofi5', name:'lukrembo — rudolph', icon:'tree',    bpm:'Lo-Fi', url:`${MUSIC_BASE}/rudolph.mp3` },
 ];
 
 const ALARM_SOUNDS = [
@@ -488,7 +490,8 @@ function MusicProvider({ children }) {
   const [position,     setPosition]     = useState(0);
   const [duration,     setDuration]     = useState(0);
   const soundRef      = useRef(null);
-  const seekTargetRef = useRef(null); // evita que updates obsoletos sobrescrevam o seek
+  const seekTargetRef = useRef(null);
+  const genRef        = useRef(0); // geração — cancela play() em voo quando nova requisição chega
 
   useEffect(() => {
     Audio.setAudioModeAsync({ playsInSilentModeIOS: true, staysActiveInBackground: true }).catch(() => {});
@@ -500,44 +503,51 @@ function MusicProvider({ children }) {
   }, [volume]);
 
   const play = async (track) => {
+    const gen = ++genRef.current;
+    const prev = soundRef.current;
+    soundRef.current = null;
     try {
-      if (soundRef.current) { await soundRef.current.unloadAsync(); soundRef.current = null; }
+      if (prev) await prev.unloadAsync().catch(() => {});
+      if (gen !== genRef.current) return; // outra chamada de play() chegou, abandona
       setPosition(0); setDuration(0); seekTargetRef.current = null;
       const { sound } = await Audio.Sound.createAsync(
         { uri: track.url },
         { shouldPlay: true, volume },
       );
+      if (gen !== genRef.current) { sound.unloadAsync().catch(() => {}); return; }
       soundRef.current = sound;
       setCurrentTrack(track);
       setPlaying(true);
       sound.setOnPlaybackStatusUpdate(s => {
+        if (gen !== genRef.current) return; // callback de som antigo, ignora
         if (s.isLoaded) {
+          if (seekTargetRef.current !== null) return; // seek em andamento, ignora todos os updates
           const pos = (s.positionMillis || 0) / 1000;
-          // Ignora updates que chegam antes do seek nativo completar
-          if (seekTargetRef.current !== null && Math.abs(pos - seekTargetRef.current) > 1) return;
-          seekTargetRef.current = null;
           setPosition(pos);
           if (s.durationMillis) setDuration(s.durationMillis / 1000);
         }
         if (s.didJustFinish) { setPlaying(false); setPosition(0); }
       });
-    } catch (_) { Alert.alert('Erro', 'Não foi possível reproduzir esta faixa.'); }
+    } catch (_) {
+      if (gen === genRef.current) Alert.alert('Erro', 'Não foi possível reproduzir esta faixa.');
+    }
   };
 
   const pause  = async () => { await soundRef.current?.pauseAsync().catch(() => {}); setPlaying(false); };
   const resume = async () => { await soundRef.current?.playAsync().catch(() => {});  setPlaying(true);  };
   const stop   = async () => {
-    await soundRef.current?.stopAsync().catch(() => {});
-    await soundRef.current?.unloadAsync().catch(() => {});
+    genRef.current++; // invalida qualquer play() em andamento
+    const prev = soundRef.current;
     soundRef.current = null; seekTargetRef.current = null;
+    if (prev) { await prev.stopAsync().catch(() => {}); await prev.unloadAsync().catch(() => {}); }
     setPlaying(false); setCurrentTrack(null); setPosition(0); setDuration(0);
   };
   const seekTo = async (secs) => {
     try {
       seekTargetRef.current = secs;
       await soundRef.current?.setPositionAsync(Math.round(secs * 1000));
-      setPosition(secs);
       seekTargetRef.current = null;
+      setPosition(secs);
     } catch (_) { seekTargetRef.current = null; }
   };
 
@@ -1037,15 +1047,11 @@ function AuthScreen() {
         >
           {/* Brand */}
           <View style={{ alignItems:'center', marginBottom:40 }}>
-            <View style={{
-              width:72, height:72, borderRadius:20,
-              backgroundColor:C.accentBg,
-              borderWidth:2, borderColor:C.accent,
-              alignItems:'center', justifyContent:'center',
-              marginBottom:16,
-            }}>
-              <Icon name="calendar" size={36} color={C.accent}/>
-            </View>
+            <Image
+              source={require('./LogoNovaCorEnovosHighlights.png')}
+              style={{ width:96, height:96, borderRadius:20, marginBottom:16 }}
+              resizeMode="contain"
+            />
             <Text style={[T.h1, { color:C.text, letterSpacing:2 }]}>AGENDA</Text>
             <Ornament style={{ width:200, marginTop:12 }}/>
             <Text style={[T.caption, { color:C.text3, marginTop:8, letterSpacing:3 }]}>
@@ -2175,11 +2181,9 @@ function HumorScreen({ onMenu }) {
 
 // ─── Slider reutilizável (responder system, sem libs extras) ────────────────
 function TrackSlider({ value, max, onChange, color }) {
-  const viewRef    = useRef(null);
   const [w, setW]  = useState(300);
   const [display, setDisplay] = useState(value);
   const wRef       = useRef(300);
-  const pageXRef   = useRef(0);    // X absoluto do container na tela (para snap no toque)
   const displayRef = useRef(value);
   const draggingRef = useRef(false);
   const gestureRef = useRef({ startPageX:0, startPageY:0, startVal:0, dir:null });
@@ -2193,11 +2197,11 @@ function TrackSlider({ value, max, onChange, color }) {
 
   const ratio = max > 0 ? Math.min(1, Math.max(0, display / max)) : 0;
 
-  // Converte pageX em valor usando posição absoluta do container (para snap imediato no toque)
-  const snapVal = (pageX) =>
-    Math.max(0, Math.min(max, ((pageX - pageXRef.current) / wRef.current) * max));
+  // Snap pelo locationX (relativo ao elemento — correto mesmo após scroll)
+  const snapVal = (locationX) =>
+    Math.max(0, Math.min(max, (locationX / wRef.current) * max));
 
-  // Calcula valor como delta do ponto de toque (funciona corretamente para esquerda e direita)
+  // Delta em relação ao ponto de início do toque
   const valFromDx = (pageX) => {
     const delta = ((pageX - gestureRef.current.startPageX) / wRef.current) * max;
     return Math.max(0, Math.min(max, gestureRef.current.startVal + delta));
@@ -2205,21 +2209,18 @@ function TrackSlider({ value, max, onChange, color }) {
 
   return (
     <View
-      ref={viewRef}
       style={{ height:40, justifyContent:'center' }}
       onLayout={e => {
         wRef.current = e.nativeEvent.layout.width;
         setW(e.nativeEvent.layout.width);
-        // Captura posição absoluta do container para o snap-on-tap
-        viewRef.current?.measure((_, __, ___, ____, px) => { pageXRef.current = px; });
       }}
       onStartShouldSetResponder={() => true}
       onMoveShouldSetResponder={() => true}
       onResponderTerminationRequest={() => gestureRef.current.dir === 'v'}
       onResponderGrant={e => {
         draggingRef.current = true;
-        // Snap imediato: thumb pula para onde o dedo tocou
-        const snapped = snapVal(e.nativeEvent.pageX);
+        // Snap imediato: locationX é sempre relativo ao elemento, independente de scroll
+        const snapped = snapVal(e.nativeEvent.locationX);
         displayRef.current = snapped;
         setDisplay(snapped);
         gestureRef.current = {
@@ -2354,7 +2355,7 @@ function MusicaScreen({ onMenu }) {
             <TrackSlider
               value={volume}
               max={1}
-              onChange={v => setVolume(Math.round(v * 100) / 100)}
+              onChange={setVolume}
               color={C.accent}
             />
           </View>
@@ -2712,13 +2713,11 @@ function Root() {
 
   if (isLoading) return (
     <View style={{ flex:1, backgroundColor:C.bg, alignItems:'center', justifyContent:'center', gap:20 }}>
-      <View style={{
-        width:80, height:80, borderRadius:20,
-        backgroundColor:C.accentBg, borderWidth:2, borderColor:C.accent,
-        alignItems:'center', justifyContent:'center',
-      }}>
-        <Icon name="calendar" size={40} color={C.accent}/>
-      </View>
+      <Image
+        source={require('./LogoNovaCorEnovosHighlights.png')}
+        style={{ width:100, height:100, borderRadius:20 }}
+        resizeMode="contain"
+      />
       <Text style={[T.h2, { color:C.accent, letterSpacing:2.5 }]}>AGENDA</Text>
       <ActivityIndicator color={C.accent} size="large"/>
     </View>

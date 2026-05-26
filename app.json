@@ -4,20 +4,21 @@
     "slug": "agenda-planner",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./logoAgenda.png",
+    "icon": "./LogoNovaCorEnovosHighlights.png",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "image": "./logoAgenda.png",
+      "image": "./LogoNovaCorEnovosHighlights.png",
       "resizeMode": "contain",
       "backgroundColor": "#1a1a2e"
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./logoAgenda.png",
+        "foregroundImage": "./LogoNovaCorEnovosHighlights.png",
         "backgroundColor": "#1a1a2e"
       },
       "package": "com.agendaplanner.app",
       "permissions": [
+        "android.permission.INTERNET",
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS"
       ]
