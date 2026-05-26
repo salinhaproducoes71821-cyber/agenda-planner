@@ -3,6 +3,7 @@ node_modules/
 
 # Variáveis de ambiente (NUNCA subir)
 .env
+.env.example
 .env.local
 .env.production
 
