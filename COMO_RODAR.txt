@@ -1,0 +1,135 @@
+════════════════════════════════════════════════════════════════════
+  AGENDA APP v3.0 — GUIA DE INSTALAÇÃO E EXECUÇÃO
+════════════════════════════════════════════════════════════════════
+
+REQUISITOS
+──────────
+  - Node.js 20 LTS  →  https://nodejs.org  (baixe a versão LTS)
+  - nvm-windows (recomendado para gerenciar versões do Node)
+      winget install CoreyButler.NVMforWindows
+  - Expo Go instalado no celular (versão 54.x)
+      Android: Play Store → "Expo Go"
+  - Conta no MongoDB Atlas (gratuita) → https://mongodb.com/atlas
+  - Celular e computador na mesma rede Wi-Fi
+
+
+════════════════════════════════════════════════════════════════════
+  PASSO 1 — BANCO DE DADOS (MongoDB Atlas)
+════════════════════════════════════════════════════════════════════
+
+  1. Acesse mongodb.com/atlas e crie uma conta gratuita
+  2. Crie um cluster M0 (Free)
+  3. Em "Database Access" → Add New Database User
+       Usuário: escolha um nome
+       Senha:   escolha uma senha forte
+       Permissão: "Read and write to any database"
+  4. Em "Network Access" → Add IP Address → Allow Access from Anywhere (0.0.0.0/0)
+  5. Em "Connect" → Drivers → copie a connection string:
+       mongodb+srv://USUARIO:SENHA@seucluster.mongodb.net/?appName=NomeApp
+
+
+════════════════════════════════════════════════════════════════════
+  PASSO 2 — CONFIGURAR O PROJETO
+════════════════════════════════════════════════════════════════════
+
+  2.1. Instale o Node 20 (se usar nvm-windows):
+         nvm install 20
+         nvm use 20
+
+  2.2. Instale as dependências:
+         npm install
+
+  2.3. Crie o arquivo .env na raiz do projeto copiando o .env.example:
+         cp .env.example .env   (ou copie e renomeie manualmente)
+
+  2.4. Edite o .env com seus dados:
+
+         PORT=3000
+         NODE_ENV=development
+
+         DB_TYPE=mongo
+         MONGO_URI=mongodb+srv://USUARIO:SENHA@seucluster.mongodb.net/agenda?appName=Agenda
+
+         JWT_SECRET=gere_com_o_comando_abaixo
+         JWT_REFRESH_SECRET=gere_com_o_comando_abaixo
+         JWT_EXPIRES_IN=15m
+         JWT_REFRESH_EXPIRES_IN=7d
+
+         ALLOWED_ORIGINS=*
+
+       Para gerar os segredos JWT, rode no terminal:
+         node -e "const c=require('crypto'); console.log(c.randomBytes(64).toString('hex'))"
+       (rode duas vezes — um para JWT_SECRET, outro para JWT_REFRESH_SECRET)
+
+  2.5. Descubra o IP local da máquina:
+         Windows: ipconfig  →  procure "Endereço IPv4" na interface de rede usada
+         Linux/Mac: ifconfig ou ip addr
+
+  2.6. Atualize o arquivo api-service.js com o IP local encontrado:
+         Linha 3:  const API_BASE = 'http://SEU_IP_LOCAL:3000';
+       Exemplo:    const API_BASE = 'http://192.168.1.10:3000';
+
+       IMPORTANTE: o celular e o computador devem estar na mesma rede Wi-Fi.
+                   Não use "localhost" aqui — o celular não consegue resolver.
+
+
+════════════════════════════════════════════════════════════════════
+  PASSO 3 — RODAR O BACKEND
+════════════════════════════════════════════════════════════════════
+
+  Abra um terminal na pasta do projeto e rode:
+
+    npm start
+
+  Você verá algo como:
+    Agenda API rodando na porta 3000 [development] [DB: mongo]
+
+  Mantenha esse terminal aberto enquanto usar o app.
+
+  Para desenvolvimento com reload automático:
+    npm run dev
+
+
+════════════════════════════════════════════════════════════════════
+  PASSO 4 — RODAR O FRONTEND (Expo)
+════════════════════════════════════════════════════════════════════
+
+  Abra um SEGUNDO terminal na pasta do projeto e rode:
+
+    npx expo start --clear
+
+  Aparecerá um QR Code no terminal.
+  Abra o Expo Go no celular e escaneie o QR Code.
+
+  ATENÇÃO: rode o backend (Passo 3) antes do frontend.
+
+
+════════════════════════════════════════════════════════════════════
+  RESUMO — ORDEM DE EXECUÇÃO
+════════════════════════════════════════════════════════════════════
+
+  Terminal 1:  npm start          ← backend (mantém aberto)
+  Terminal 2:  npx expo start     ← frontend (mantém aberto)
+  Celular:     escaneie o QR Code no Expo Go
+
+
+════════════════════════════════════════════════════════════════════
+  PROBLEMAS COMUNS
+════════════════════════════════════════════════════════════════════
+
+  "Cannot connect to server"
+    → Verifique se o IP em api-service.js bate com o IP atual da máquina
+    → Confirme que celular e PC estão na mesma rede Wi-Fi
+    → Verifique se o backend está rodando (Terminal 1)
+
+  "Expo Go incompatível"
+    → Atualize o Expo Go na Play Store / App Store
+
+  Erro de versão do Node
+    → Use nvm use 20 antes de rodar qualquer comando
+
+  "MongoServerError" ou falha ao conectar banco
+    → Verifique a MONGO_URI no .env
+    → Confirme que seu IP está liberado no Network Access do Atlas
+
+════════════════════════════════════════════════════════════════════
