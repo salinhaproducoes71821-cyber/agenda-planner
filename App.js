@@ -26,7 +26,17 @@ import * as ImagePicker from 'expo-image-picker';
 import { Audio } from 'expo-av';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
 import api from './api-service';
+
+// Exibe notificações mesmo com o app em primeiro plano
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
 
 const { width: SW } = Dimensions.get('window');
 
@@ -360,6 +370,46 @@ const SECURITY = {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
+// NOTIFICAÇÕES — agenda/cancela lembretes locais
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function scheduleEventNotification(event) {
+  if (!event?.lembrete || event._offline) return;
+  try {
+    await cancelEventNotification(event.id);
+    const [y, mo, d] = event.data.split('-').map(Number);
+    const [h, m]     = event.hora.split(':').map(Number);
+    const trigger    = new Date(y, mo - 1, d, h, m, 0);
+    trigger.setMinutes(trigger.getMinutes() - 10);
+    if (trigger <= new Date()) return; // já passou
+    const notifId = await Notifications.scheduleNotificationAsync({
+      content: {
+        title: event.titulo,
+        body: `Em 10 minutos • ${event.hora}`,
+        sound: event.alarmSound !== 'vibrate',
+        ...(Platform.OS === 'android' && { channelId: 'lembretes' }),
+      },
+      trigger: { date: trigger },
+    });
+    const stored = JSON.parse(await AsyncStorage.getItem('@ag_notif_ids') || '{}');
+    stored[String(event.id)] = notifId;
+    await AsyncStorage.setItem('@ag_notif_ids', JSON.stringify(stored));
+  } catch (_) {}
+}
+
+async function cancelEventNotification(eventId) {
+  try {
+    const stored = JSON.parse(await AsyncStorage.getItem('@ag_notif_ids') || '{}');
+    const notifId = stored[String(eventId)];
+    if (notifId) {
+      await Notifications.cancelScheduledNotificationAsync(notifId).catch(() => {});
+      delete stored[String(eventId)];
+      await AsyncStorage.setItem('@ag_notif_ids', JSON.stringify(stored));
+    }
+  } catch (_) {}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // AUTH CONTEXT
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -436,41 +486,57 @@ const useAuth = () => useContext(AuthContext);
 const EventsContext = createContext(null);
 
 function EventsProvider({ children }) {
-  const [events, setEvents] = useState([]);
+  const [events,    setEvents]    = useState([]);
+  const [isOffline, setIsOffline] = useState(false);
+
+  const applyEvents = (data, mes) => {
+    if (mes) {
+      setEvents(prev => {
+        const others = prev.filter(e => !e.data.startsWith(mes));
+        return [...others, ...data];
+      });
+    } else {
+      setEvents(data);
+    }
+  };
 
   const load = useCallback(async (mes) => {
     try {
       const data = await api.getEvents(mes);
-      if (mes) {
-        setEvents(prev => {
-          const others = prev.filter(e => !e.data.startsWith(mes));
-          return [...others, ...data];
-        });
-      } else {
-        setEvents(data);
-      }
-    } catch (_) {}
+      setIsOffline(false);
+      applyEvents(data, mes);
+      // Tenta sincronizar operações pendentes agora que estamos online
+      api.flushQueue(() => load(mes)).catch(() => {});
+    } catch (_) {
+      setIsOffline(true);
+      const cached = await api.getCachedEvents(mes);
+      if (cached?.length) applyEvents(cached, mes);
+    }
   }, []);
 
   const addEvent = async (payload) => {
     const ev = await api.createEvent(payload);
     setEvents(prev => [...prev, ev]);
+    scheduleEventNotification(ev).catch(() => {});
     return ev;
   };
 
   const editEvent = async (id, payload) => {
     const ev = await api.updateEvent(id, payload);
     setEvents(prev => prev.map(e => e.id === id ? ev : e));
+    cancelEventNotification(id).catch(() => {});
+    scheduleEventNotification(ev).catch(() => {});
     return ev;
   };
 
   const removeEvent = async (id) => {
     await api.deleteEvent(id);
     setEvents(prev => prev.filter(e => e.id !== id));
+    cancelEventNotification(id).catch(() => {});
   };
 
   return (
-    <EventsContext.Provider value={{ events, load, addEvent, editEvent, removeEvent }}>
+    <EventsContext.Provider value={{ events, load, addEvent, editEvent, removeEvent, isOffline }}>
       {children}
     </EventsContext.Provider>
   );
@@ -1629,6 +1695,29 @@ function CalendarScreen({ onMenu }) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const HOUR_H = 64;
+const EVENT_OVERLAP_MINS = 50; // duração assumida para detectar sobreposição
+
+// Distribui eventos sobrepostos em colunas side-by-side
+function layoutDayEvents(evs) {
+  if (!evs.length) return {};
+  const toMins = (h) => { const [hh, mm] = h.split(':').map(Number); return hh * 60 + mm; };
+  const sorted = [...evs].sort((a, b) => toMins(a.hora) - toMins(b.hora));
+  const cols = [];
+  for (const ev of sorted) {
+    const start = toMins(ev.hora);
+    let placed = false;
+    for (let ci = 0; ci < cols.length; ci++) {
+      const last = cols[ci][cols[ci].length - 1];
+      if (toMins(last.hora) + EVENT_OVERLAP_MINS <= start) {
+        cols[ci].push(ev); placed = true; break;
+      }
+    }
+    if (!placed) cols.push([ev]);
+  }
+  const result = {};
+  cols.forEach((col, ci) => col.forEach(ev => { result[ev.id] = { col: ci, totalCols: cols.length }; }));
+  return result;
+}
 
 function CronogramaScreen({ onMenu }) {
   const { C, T } = useTheme();
@@ -1748,22 +1837,35 @@ function CronogramaScreen({ onMenu }) {
             </View>
           )}
 
-          {dayEvs.map(e => (
-            <TouchableOpacity key={e.id}
-              style={{
-                position:'absolute', left:2, right:2,
-                top:getTop(e.hora), height:HOUR_H - 12,
-                borderLeftWidth:4, borderRadius:8,
-                paddingHorizontal:10, paddingVertical:6,
-                backgroundColor:e.cor + '1e', borderLeftColor:e.cor,
-              }}
-              onPress={() => { setEdit(e); setModal(true); }}
-              {...a11y(e.titulo, e.hora)}
-            >
-              <Text style={[T.sm, { color:e.cor, fontWeight:'700' }]} numberOfLines={1}>{e.titulo}</Text>
-              <Text style={[T.caption, { color:e.cor, marginTop:2, opacity:0.8 }]}>{e.hora}</Text>
-            </TouchableOpacity>
-          ))}
+          {(() => {
+            const layout = layoutDayEvents(dayEvs);
+            // marginLeft:56 + marginRight:12 = 68px de margens no container
+            const containerW = SW - 68;
+            const COL_GAP = 3;
+            return dayEvs.map(e => {
+              const { col, totalCols } = layout[e.id] || { col: 0, totalCols: 1 };
+              const colW   = (containerW - (totalCols - 1) * COL_GAP) / totalCols;
+              const evLeft = col * (colW + COL_GAP);
+              const evRight = containerW - evLeft - colW;
+              return (
+                <TouchableOpacity key={e.id}
+                  style={{
+                    position:'absolute',
+                    left: evLeft, right: Math.max(0, evRight),
+                    top: getTop(e.hora), height: HOUR_H - 12,
+                    borderLeftWidth:4, borderRadius:8,
+                    paddingHorizontal:8, paddingVertical:6,
+                    backgroundColor: e.cor + '1e', borderLeftColor: e.cor,
+                  }}
+                  onPress={() => { setEdit(e); setModal(true); }}
+                  {...a11y(e.titulo, e.hora)}
+                >
+                  <Text style={[T.sm, { color:e.cor, fontWeight:'700' }]} numberOfLines={1}>{e.titulo}</Text>
+                  <Text style={[T.caption, { color:e.cor, marginTop:2, opacity:0.8 }]}>{e.hora}</Text>
+                </TouchableOpacity>
+              );
+            });
+          })()}
         </View>
       </ScrollView>
 
@@ -1838,7 +1940,7 @@ function NotasScreen({ onMenu }) {
           tags,
         });
         setNotas(prev => prev.map(n => n.id === openNota.id ? updated : n));
-        setSaveSt('Salvo');
+        setSaveSt(updated._offline ? 'Salvo (offline)' : 'Salvo');
       } catch (_) { setSaveSt('Erro ao salvar'); }
     }, 1500);
   };
@@ -2677,8 +2779,9 @@ function ConfigScreen({ onMenu }) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function AppShell() {
-  const { screen }     = useNav();
-  const { C }          = useTheme();
+  const { screen }              = useNav();
+  const { C, T }                = useTheme();
+  const { isOffline }           = useEvents();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const insets = useSafeAreaInsets();
 
@@ -2696,6 +2799,19 @@ function AppShell() {
 
   return (
     <View style={{ flex:1, backgroundColor:C.bg, overflow:'hidden', paddingBottom: insets.bottom }}>
+      {isOffline && (
+        <View style={{
+          backgroundColor: C.warn + '22',
+          borderBottomWidth: 1, borderBottomColor: C.warn + '55',
+          paddingHorizontal: 16, paddingVertical: 5,
+          flexDirection: 'row', alignItems: 'center', gap: 8,
+        }}>
+          <Icon name="bellOff" size={13} color={C.warn}/>
+          <Text style={[T.caption, { color: C.warn }]}>
+            Sem conexão — exibindo dados em cache. Alterações serão sincronizadas.
+          </Text>
+        </View>
+      )}
       {renderScreen()}
       <MiniPlayer/>
       <Drawer visible={drawerOpen} onClose={() => setDrawerOpen(false)}/>
@@ -2710,6 +2826,22 @@ function AppShell() {
 function Root() {
   const { currentUser, isLoading } = useAuth();
   const { C, T } = useTheme();
+
+  useEffect(() => {
+    (async () => {
+      try {
+        if (Platform.OS === 'android') {
+          await Notifications.setNotificationChannelAsync('lembretes', {
+            name: 'Lembretes de Eventos',
+            importance: Notifications.AndroidImportance.HIGH,
+            vibrationPattern: [0, 250, 250, 250],
+            sound: 'default',
+          });
+        }
+        await Notifications.requestPermissionsAsync();
+      } catch (_) {}
+    })();
+  }, []);
 
   if (isLoading) return (
     <View style={{ flex:1, backgroundColor:C.bg, alignItems:'center', justifyContent:'center', gap:20 }}>
