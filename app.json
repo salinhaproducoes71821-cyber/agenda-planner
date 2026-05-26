@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "Agenda",
+    "slug": "agenda-planner",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./logoAgenda.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./logoAgenda.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1a1a2e"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./logoAgenda.png",
+        "backgroundColor": "#1a1a2e"
+      },
+      "package": "com.agendaplanner.app",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
+    },
+    "plugins": [
+      "expo-av",
+      "expo-image-picker"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "7e187672-765e-4476-a72f-91aebcc549c2"
+      }
+    },
+    "owner": "moonstarloves85"
+  }
+}
