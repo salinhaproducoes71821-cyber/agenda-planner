@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const API_BASE = 'http://10.0.0.165:3000';
+const API_BASE = 'https://agenda-planner-production.up.railway.app';
 
 const getToken   = () => AsyncStorage.getItem('@ag_token');
 const getRefresh = () => AsyncStorage.getItem('@ag_refresh');
