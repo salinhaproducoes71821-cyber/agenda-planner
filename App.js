@@ -13,13 +13,13 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import React, {
-  createContext, useContext, useState, useEffect, useRef, useCallback,
+  createContext, useContext, useState, useEffect, useRef, useCallback, useMemo, memo,
 } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, FlatList,
   ScrollView, Modal, Alert, ActivityIndicator, KeyboardAvoidingView,
   Platform, StatusBar, Animated, Dimensions, Easing,
-  TouchableWithoutFeedback, Image, Switch, AccessibilityInfo,
+  TouchableWithoutFeedback, Image, Switch,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -296,35 +296,6 @@ const EVENT_COLORS = ['#c9923a','#7fb069','#d4a437','#c45c3a','#9b7fe8','#e0728a
 const TAG_COLORS   = ['#c9923a','#7fb069','#9b7fe8','#d4a437','#e0728a'];
 const getTagColor  = (t) => TAG_COLORS[Math.abs(t.charCodeAt(0) + t.length) % TAG_COLORS.length];
 
-const _hoje = new Date();
-const _a    = _hoje.getFullYear();
-const _m    = String(_hoje.getMonth() + 1).padStart(2, '0');
-
-const mockEvents = [
-  { id:1, titulo:'Reunião de equipe',    data:`${_a}-${_m}-12`, hora:'10:00', cor:'#c9923a', lembrete:true,  alarmSound:'gentle' },
-  { id:2, titulo:'Dentista',             data:`${_a}-${_m}-15`, hora:'14:30', cor:'#d4a437', lembrete:true,  alarmSound:'birds'  },
-  { id:3, titulo:'Academia',             data:`${_a}-${_m}-05`, hora:'07:00', cor:'#7fb069', lembrete:false, alarmSound:'piano'  },
-  { id:4, titulo:'Happy Hour',           data:`${_a}-${_m}-22`, hora:'18:00', cor:'#9b7fe8', lembrete:false, alarmSound:'classic'},
-  { id:5, titulo:'Apresentação projeto', data:`${_a}-${_m}-18`, hora:'09:00', cor:'#e0728a', lembrete:true,  alarmSound:'gentle' },
-];
-
-const mockNotas = [
-  { id:1, titulo:'Lista de compras',      conteudo:'Pão, leite, ovos, frutas\nLimpar casa na sexta',          tags:['pessoal'],       updatedAt:`${_a}-${_m}-04` },
-  { id:2, titulo:'Ideias para o projeto', conteudo:'Usar React Native\nZustand para estado\nSistema de temas', tags:['trabalho','dev'], updatedAt:`${_a}-${_m}-03` },
-  { id:3, titulo:'Livros para ler',       conteudo:'1. Duna\n2. O Hobbit\n3. Sapiens',                         tags:['pessoal'],       updatedAt:`${_a}-${_m}-01` },
-];
-
-const mockHumor = (() => {
-  const h = [];
-  for (let i = 13; i >= 1; i--) {
-    const d = new Date(_hoje);
-    d.setDate(_hoje.getDate() - i);
-    h.push({ data: d.toISOString().split('T')[0], nivel: Math.floor(Math.random() * 4) + 2 });
-  }
-  h.push({ data: _hoje.toISOString().split('T')[0], nivel: 0 });
-  return h;
-})();
-
 // ═══════════════════════════════════════════════════════════════════════════
 // VALIDAÇÕES DE SEGURANÇA
 // ═══════════════════════════════════════════════════════════════════════════
@@ -553,17 +524,36 @@ const useEvents = () => useContext(EventsContext);
 
 const MusicContext = createContext(null);
 
+// OTIMIZAÇÃO: posição e duração ficam em refs com subscribers próprios para que
+// updates a cada segundo NÃO disparem re-render no provider inteiro (e portanto
+// em toda a árvore que consome useMusic). Componentes que precisam dos números
+// em tempo real chamam useMusicPosition(); o resto (MiniPlayer minimizado,
+// drawer, etc.) só re-renderiza nas mudanças reais (playing/track/etc).
 function MusicProvider({ children }) {
   const [playing,      setPlaying]      = useState(false);
   const [currentTrack, setCurrentTrack] = useState(null);
   const [volume,       setVolume]       = useState(0.6);
-  const [position,     setPosition]     = useState(0);
-  const [duration,     setDuration]     = useState(0);
+  const [looping,      setLooping]      = useState(false);
+
   const playerRef       = useRef(null);
   const seekingRef      = useRef(false);
   const currentTrackRef = useRef(null);
-  const [looping,    setLooping]    = useState(false);
-  const loopingRef = useRef(false);
+  const loopingRef      = useRef(false);
+
+  // Subscribers de posição/duração (não disparam re-render do provider)
+  const positionRef   = useRef(0);
+  const durationRef   = useRef(0);
+  const subsRef       = useRef(new Set());
+  const notifyPos = useCallback(() => {
+    const p = positionRef.current, d = durationRef.current;
+    subsRef.current.forEach(fn => { try { fn(p, d); } catch (_) {} });
+  }, []);
+  const subscribePosition = useCallback((fn) => {
+    subsRef.current.add(fn);
+    // Entrega valor atual imediatamente para evitar piscar 0:00
+    try { fn(positionRef.current, durationRef.current); } catch (_) {}
+    return () => { subsRef.current.delete(fn); };
+  }, []);
 
   useEffect(() => { currentTrackRef.current = currentTrack; }, [currentTrack]);
   useEffect(() => { loopingRef.current = looping; }, [looping]);
@@ -573,7 +563,11 @@ function MusicProvider({ children }) {
     AsyncStorage.getItem('@ag_music_volume').then(v => {
       if (v !== null) setVolume(parseFloat(v));
     }).catch(() => {});
-    return () => { playerRef.current?.remove(); playerRef.current = null; };
+    return () => {
+      try { playerRef.current?.remove(); } catch (_) {}
+      playerRef.current = null;
+      subsRef.current.clear();
+    };
   }, []);
 
   useEffect(() => {
@@ -581,14 +575,17 @@ function MusicProvider({ children }) {
     AsyncStorage.setItem('@ag_music_volume', String(volume)).catch(() => {});
   }, [volume]);
 
-  // Listener de status — usa apenas refs e setters estáveis, sem stale closure
-  const handleStatus = (s) => {
+  // Listener de status — refs + subscribers, sem setState em loop de 1s.
+  const handleStatus = useCallback((s) => {
     if (!s.isLoaded) return;
     if (seekingRef.current) return;
-    setPosition(s.currentTime);
-    if (s.duration) setDuration(s.duration);
+    positionRef.current = s.currentTime || 0;
+    if (s.duration) durationRef.current = s.duration;
+    notifyPos();
     if (s.didJustFinish) {
-      setPlaying(false); setPosition(0);
+      setPlaying(false);
+      positionRef.current = 0;
+      notifyPos();
       if (loopingRef.current) {
         playerRef.current?.seekTo(0)
           .then(() => { playerRef.current?.play(); setPlaying(true); })
@@ -601,16 +598,19 @@ function MusicProvider({ children }) {
           playerRef.current?.replace({ uri: nt.url });
           playerRef.current?.play();
           setCurrentTrack(nt); currentTrackRef.current = nt;
-          setPosition(0); setDuration(0); setPlaying(true);
+          positionRef.current = 0; durationRef.current = 0;
+          notifyPos();
+          setPlaying(true);
         }
       }
     }
-  };
+  }, [notifyPos]);
 
-  const play = async (track) => {
+  const play = useCallback(async (track) => {
     try {
       if (!playerRef.current) {
-        const p = createAudioPlayer({ uri: track.url }, { updateInterval: 500 });
+        // 1000ms em vez de 500ms — metade do trabalho de status update
+        const p = createAudioPlayer({ uri: track.url }, { updateInterval: 1000 });
         p.volume = volume;
         p.addListener('playbackStatusUpdate', handleStatus);
         playerRef.current = p;
@@ -619,48 +619,72 @@ function MusicProvider({ children }) {
       }
       playerRef.current.volume = volume;
       playerRef.current.play();
-      setCurrentTrack(track); setPlaying(true); setPosition(0); setDuration(0);
+      setCurrentTrack(track);
+      setPlaying(true);
+      positionRef.current = 0; durationRef.current = 0;
+      notifyPos();
     } catch (_) {
       Alert.alert('Erro', 'Não foi possível reproduzir esta faixa.');
     }
-  };
+  }, [volume, handleStatus, notifyPos]);
 
-  const pause  = () => { playerRef.current?.pause(); setPlaying(false); };
-  const resume = () => { playerRef.current?.play();  setPlaying(true);  };
-  const stop   = () => {
-    playerRef.current?.pause();
-    setPlaying(false); setCurrentTrack(null); setPosition(0); setDuration(0);
+  const pause  = useCallback(() => { playerRef.current?.pause(); setPlaying(false); }, []);
+  const resume = useCallback(() => { playerRef.current?.play();  setPlaying(true);  }, []);
+  const stop   = useCallback(() => {
+    try { playerRef.current?.pause(); } catch (_) {}
+    setPlaying(false); setCurrentTrack(null);
     currentTrackRef.current = null;
-  };
-  const seekTo = async (secs) => {
+    positionRef.current = 0; durationRef.current = 0;
+    notifyPos();
+  }, [notifyPos]);
+
+  const seekTo = useCallback(async (secs) => {
     try {
       seekingRef.current = true;
       await playerRef.current?.seekTo(secs);
       seekingRef.current = false;
-      setPosition(secs);
+      positionRef.current = secs;
+      notifyPos();
     } catch (_) { seekingRef.current = false; }
-  };
+  }, [notifyPos]);
 
-  const next = async () => {
+  const next = useCallback(async () => {
     if (!currentTrackRef.current) return;
     const idx = LOFI_TRACKS.findIndex(t => t.id === currentTrackRef.current.id);
     await play(LOFI_TRACKS[(idx + 1) % LOFI_TRACKS.length]);
-  };
+  }, [play]);
 
-  const prev = async () => {
+  const prev = useCallback(async () => {
     if (!currentTrackRef.current) return;
-    if (position > 3) { await seekTo(0); return; }
+    if (positionRef.current > 3) { await seekTo(0); return; }
     const idx = LOFI_TRACKS.findIndex(t => t.id === currentTrackRef.current.id);
     await play(LOFI_TRACKS[(idx - 1 + LOFI_TRACKS.length) % LOFI_TRACKS.length]);
-  };
+  }, [play, seekTo]);
 
-  return (
-    <MusicContext.Provider value={{ playing, currentTrack, volume, setVolume, play, pause, resume, stop, next, prev, looping, setLooping, position, duration, seekTo }}>
-      {children}
-    </MusicContext.Provider>
-  );
+  // Valor do contexto estável quando nada muda — useMemo evita recriar objeto
+  // novo a cada render (que invalidaria React.memo de consumidores).
+  const value = useMemo(() => ({
+    playing, currentTrack, volume, setVolume,
+    play, pause, resume, stop, next, prev,
+    looping, setLooping,
+    subscribePosition,
+  }), [playing, currentTrack, volume, looping, play, pause, resume, stop, next, prev, subscribePosition]);
+
+  return <MusicContext.Provider value={value}>{children}</MusicContext.Provider>;
 }
 const useMusic = () => useContext(MusicContext);
+
+// Hook isolado para posição/duração — só re-renderiza o componente que o usa,
+// não a árvore inteira de consumidores de useMusic. Atualiza a ~1 Hz.
+function useMusicPosition() {
+  const ctx = useContext(MusicContext);
+  const [pd, setPd] = useState({ position: 0, duration: 0 });
+  useEffect(() => {
+    if (!ctx?.subscribePosition) return;
+    return ctx.subscribePosition((position, duration) => setPd({ position, duration }));
+  }, [ctx?.subscribePosition]);
+  return pd;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // NAVEGAÇÃO
@@ -805,17 +829,46 @@ function PasswordStrengthBar({ password }) {
 // MINI PLAYER DE MÚSICA — aparece em todas as telas
 // ═══════════════════════════════════════════════════════════════════════════
 
-function MiniPlayer() {
+// Sub-componente isolado para tempo/progresso. Faz subscribe direto na ref
+// do MusicProvider, recebendo updates a 1Hz SEM disparar render do MiniPlayer.
+const fmtTime = (secs) => {
+  const s = Math.max(0, Math.floor(secs));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+
+const MiniPlayerProgress = memo(function MiniPlayerProgress({ trackLabel, trackBpm, textColor3, txStyleXs, accent }) {
+  const { position, duration } = useMusicPosition();
+  const progressPct = duration > 0 ? Math.min(100, Math.round((position / duration) * 100)) : 0;
+  return (
+    <>
+      <View style={{
+        position:'absolute', bottom:0, left:0, right:0, height:2,
+        backgroundColor:'rgba(128,128,128,0.15)',
+        borderBottomLeftRadius:14, borderBottomRightRadius:14,
+      }}>
+        <View style={{
+          width:`${progressPct}%`,
+          height:'100%',
+          backgroundColor: accent,
+          borderBottomLeftRadius:14,
+        }}/>
+      </View>
+      <Text style={[txStyleXs, { color: textColor3, marginTop:1 }]}>
+        {duration > 0 ? `${fmtTime(position)} / ${fmtTime(duration)}` : `${trackBpm} · Lo-Fi`}
+      </Text>
+      {/* trackLabel não é usado aqui; serve só como key implícita */}
+      {trackLabel ? null : null}
+    </>
+  );
+});
+
+const MiniPlayer = memo(function MiniPlayer() {
   const { C, T } = useTheme();
-  const { playing, currentTrack, pause, resume, next, prev, position, duration } = useMusic();
+  const { playing, currentTrack, pause, resume, next, prev } = useMusic();
   const insets = useSafeAreaInsets();
   if (!currentTrack) return null;
   const miniBottom = 16 + insets.bottom;
-  const fmtTime = (secs) => {
-    const s = Math.floor(secs);
-    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-  };
-  const progressRatio = duration > 0 ? Math.min(1, position / duration) : 0;
+
   return (
     <View style={{
       position: 'absolute',
@@ -838,20 +891,6 @@ function MiniPlayer() {
     }}
     {...a11y('Player de música', 'Controles da música lo-fi')}
     >
-      {/* Barra de progresso na base do card */}
-      <View style={{
-        position:'absolute', bottom:0, left:0, right:0, height:2,
-        backgroundColor:'rgba(128,128,128,0.15)',
-        borderBottomLeftRadius:14, borderBottomRightRadius:14,
-      }}>
-        <View style={{
-          width:`${Math.round(progressRatio * 100)}%`,
-          height:'100%',
-          backgroundColor: C.accent,
-          borderBottomLeftRadius:14,
-        }}/>
-      </View>
-
       {/* Ícone */}
       <View style={{
         width: 36, height: 36, borderRadius: 18,
@@ -861,12 +900,16 @@ function MiniPlayer() {
         <Icon name="music" size={16} color={C.accent}/>
       </View>
 
-      {/* Nome + tempo */}
+      {/* Nome + tempo (tempo via subscriber isolado) */}
       <View style={{ flex: 1 }}>
         <Text style={[T.sm, { color: C.text, fontWeight:'700' }]} numberOfLines={1}>{currentTrack.name}</Text>
-        <Text style={[T.xs, { color: C.text3, marginTop:1 }]}>
-          {duration > 0 ? `${fmtTime(position)} / ${fmtTime(duration)}` : `${currentTrack.bpm} · Lo-Fi`}
-        </Text>
+        <MiniPlayerProgress
+          trackLabel={currentTrack.id}
+          trackBpm={currentTrack.bpm}
+          textColor3={C.text3}
+          txStyleXs={T.xs}
+          accent={C.accent}
+        />
       </View>
 
       {/* Prev */}
@@ -885,7 +928,7 @@ function MiniPlayer() {
       </TouchableOpacity>
     </View>
   );
-}
+});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TOPBAR
@@ -1524,74 +1567,96 @@ function EventModal({ visible, event, defaultDate, onSave, onDelete, onClose }) 
 function CalendarScreen({ onMenu }) {
   const { C, T } = useTheme();
   const { events, load, addEvent, editEvent, removeEvent } = useEvents();
-  const hoje    = new Date();
-  const hojeStr = hoje.toISOString().split('T')[0];
-  const [ano,   setAno]   = useState(hoje.getFullYear());
-  const [mes,   setMes]   = useState(hoje.getMonth());
+  // hojeStr é fixado no mount (não muda durante a sessão; evita Date() a cada render)
+  const hojeStr = useMemo(() => new Date().toISOString().split('T')[0], []);
+  const hojeInit = useMemo(() => {
+    const d = new Date();
+    return { ano: d.getFullYear(), mes: d.getMonth() };
+  }, []);
+  const [ano,   setAno]   = useState(hojeInit.ano);
+  const [mes,   setMes]   = useState(hojeInit.mes);
   const [sel,   setSel]   = useState(hojeStr);
   const [modal, setModal] = useState(false);
   const [edit,  setEdit]  = useState(null);
 
   const mesStr = `${ano}-${String(mes + 1).padStart(2, '0')}`;
-  const evs    = events.filter(e => e.data.startsWith(mesStr));
 
-  useEffect(() => { load(mesStr); }, [ano, mes]);
+  useEffect(() => { load(mesStr); }, [ano, mes, load]);
 
-  const dayEvs = evs.filter(e => e.data === sel).sort((a, b) => a.hora.localeCompare(b.hora));
-
-  const changeMonth = (dir) => {
-    let m = mes + dir, a = ano;
-    if (m < 0)  { m = 11; a--; }
-    if (m > 11) { m = 0;  a++; }
-    setMes(m); setAno(a);
-  };
-
-  const buildCells = () => {
-    const cells = [];
-    const first = new Date(ano, mes, 1).getDay();
-    const dim   = new Date(ano, mes + 1, 0).getDate();
-    const dip   = new Date(ano, mes, 0).getDate();
-
-    for (let i = first - 1; i >= 0; i--) {
-      const d  = dip - i;
-      const pm = mes === 0 ? 12 : mes;
-      const pa = mes === 0 ? ano - 1 : ano;
-      cells.push({ day:d, ds:`${pa}-${String(pm).padStart(2,'0')}-${String(d).padStart(2,'0')}`, other:true });
+  // Index de eventos por data — calculado uma vez por mudança de `events`.
+  // Substitui N×35 filtros lineares por N×35 lookups O(1) (ganho grande em CPU
+  // e battery ao trocar mês ou abrir o calendário).
+  const eventsByDate = useMemo(() => {
+    const map = new Map();
+    for (const e of events) {
+      if (!e?.data) continue;
+      const arr = map.get(e.data);
+      if (arr) arr.push(e);
+      else map.set(e.data, [e]);
     }
-    for (let d = 1; d <= dim; d++) {
-      cells.push({ day:d, ds:`${ano}-${String(mes+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`, other:false });
-    }
-    const rem = (first + dim) % 7 === 0 ? 0 : 7 - (first + dim) % 7;
-    for (let d = 1; d <= rem; d++) {
-      const nm = mes === 11 ? 1  : mes + 2;
-      const na = mes === 11 ? ano + 1 : ano;
-      cells.push({ day:d, ds:`${na}-${String(nm).padStart(2,'0')}-${String(d).padStart(2,'0')}`, other:true });
-    }
-    return cells;
-  };
+    return map;
+  }, [events]);
 
-  const handleSave = async (payload) => {
+  const dayEvs = useMemo(() => {
+    const arr = eventsByDate.get(sel);
+    return arr ? [...arr].sort((a, b) => a.hora.localeCompare(b.hora)) : [];
+  }, [eventsByDate, sel]);
+
+  const changeMonth = useCallback((dir) => {
+    setAno(a => {
+      // Sem rerender duplo: combine em uma única atualização
+      let mNew = mes + dir, aNew = a;
+      if (mNew < 0)  { mNew = 11; aNew--; }
+      if (mNew > 11) { mNew = 0;  aNew++; }
+      setMes(mNew);
+      return aNew;
+    });
+  }, [mes]);
+
+  const handleSave = useCallback(async (payload) => {
     try {
       if (edit) await editEvent(edit.id, payload);
       else      await addEvent(payload);
     } catch (e) { Alert.alert('Erro', e.message); }
     setModal(false); setEdit(null);
-  };
+  }, [edit, editEvent, addEvent]);
 
-  const handleDel = async (id) => {
+  const handleDel = useCallback(async (id) => {
     try { await removeEvent(id); } catch (e) { Alert.alert('Erro', e.message); }
     setModal(false); setEdit(null);
-  };
+  }, [removeEvent]);
 
-  const openModal = (e = null) => { setEdit(e); setModal(true); };
+  const openModal = useCallback((e = null) => { setEdit(e); setModal(true); }, []);
 
-  const fmtLabel = () => {
+  const fmtLabel = useCallback(() => {
     const [y, m, d] = sel.split('-');
     const dt = new Date(+y, +m - 1, +d);
     return `${DIAS_LABELS[dt.getDay()]}, ${d} de ${MESES[+m - 1]}`;
-  };
+  }, [sel]);
 
-  const cells = buildCells();
+  // Memoiza o grid: só muda quando ano/mês mudam (não a cada toque em outro dia)
+  const cells = useMemo(() => {
+    const arr = [];
+    const first = new Date(ano, mes, 1).getDay();
+    const dim   = new Date(ano, mes + 1, 0).getDate();
+    const dip   = new Date(ano, mes, 0).getDate();
+    for (let i = first - 1; i >= 0; i--) {
+      const d  = dip - i;
+      const pm = mes === 0 ? 12 : mes;
+      const pa = mes === 0 ? ano - 1 : ano;
+      arr.push({ day:d, ds:`${pa}-${String(pm).padStart(2,'0')}-${String(d).padStart(2,'0')}`, other:true });
+    }
+    for (let d = 1; d <= dim; d++) {
+      arr.push({ day:d, ds:`${ano}-${String(mes+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`, other:false });
+    }
+    const rem = (first + dim) % 7 === 0 ? 0 : 7 - (first + dim) % 7;
+    for (let d = 1; d <= rem; d++) {
+      const nm = mes === 11 ? 1  : mes + 2;
+      const na = mes === 11 ? ano + 1 : ano;
+      arr.push({ day:d, ds:`${na}-${String(nm).padStart(2,'0')}-${String(d).padStart(2,'0')}`, other:true });
+    }
+    return arr;
+  }, [ano, mes]);
 
   return (
     <View style={{ flex:1, backgroundColor:C.bg }}>
@@ -1660,14 +1725,20 @@ function CalendarScreen({ onMenu }) {
       <FlatList
         data={cells}
         numColumns={7}
-        keyExtractor={(_, i) => String(i)}
+        keyExtractor={(item) => item.ds}
         scrollEnabled={false}
+        removeClippedSubviews={false}
         style={{ backgroundColor:C.bg2, flexShrink:1 }}
         renderItem={({ item }) => {
-          const dots      = events.filter(e => e.data === item.ds);
+          // Lookup O(1) no Map em vez de .filter() varrendo todo events.
+          const dotsArr   = eventsByDate.get(item.ds);
+          const dotsLen   = dotsArr ? dotsArr.length : 0;
           const isToday   = item.ds === hojeStr;
           const isSel     = item.ds === sel;
-          const dw        = new Date(item.ds + 'T00:00:00').getDay();
+          // Dia da semana via parse de YYYY-MM-DD (uma alocação Date, sem string concat).
+          const yearNum   = parseInt(item.ds.slice(0, 4), 10);
+          const monthNum  = parseInt(item.ds.slice(5, 7), 10);
+          const dw        = new Date(yearNum, monthNum - 1, item.day).getDay();
           const isWeekend = dw === 0 || dw === 6;
           return (
             <TouchableOpacity
@@ -1678,7 +1749,7 @@ function CalendarScreen({ onMenu }) {
                 borderWidth: isSel && !isToday ? 1 : 0, borderColor: C.border2,
               }}
               onPress={() => setSel(item.ds)}
-              {...a11y(`${item.day} ${MESES[mes]}`, `${dots.length} evento(s)`)}
+              {...a11y(`${item.day} ${MESES[mes]}`, `${dotsLen} evento(s)`)}
             >
               <View style={{
                 width:30, height:30, borderRadius:15,
@@ -1691,9 +1762,9 @@ function CalendarScreen({ onMenu }) {
                 }]}>{item.day}</Text>
               </View>
               <View style={{ flexDirection:'row', gap:2, marginTop:1, height:6 }}>
-                {dots.slice(0, 3).map((_, di) => (
-                  <View key={di} style={{ width:5, height:5, borderRadius:3, backgroundColor:C.accent }}/>
-                ))}
+                {dotsLen > 0 && <View style={{ width:5, height:5, borderRadius:3, backgroundColor:C.accent }}/>}
+                {dotsLen > 1 && <View style={{ width:5, height:5, borderRadius:3, backgroundColor:C.accent }}/>}
+                {dotsLen > 2 && <View style={{ width:5, height:5, borderRadius:3, backgroundColor:C.accent }}/>}
               </View>
             </TouchableOpacity>
           );
@@ -1793,48 +1864,61 @@ function layoutDayEvents(evs) {
 function CronogramaScreen({ onMenu }) {
   const { C, T } = useTheme();
   const { events, load, addEvent, editEvent, removeEvent } = useEvents();
-  const hoje = new Date();
-  const weekDays = Array.from({ length:7 }, (_, i) => {
-    const d = new Date(hoje);
-    d.setDate(hoje.getDate() + i);
-    return { label:DIAS_LABELS[d.getDay()], num:d.getDate(), ds:d.toISOString().split('T')[0] };
-  });
+  // hoje + weekDays só uma vez por sessão (não recalcula a cada render/seleção)
+  const { hojeHour, weekDays, mesStr } = useMemo(() => {
+    const d0 = new Date();
+    const days = Array.from({ length:7 }, (_, i) => {
+      const d = new Date(d0);
+      d.setDate(d0.getDate() + i);
+      return { label:DIAS_LABELS[d.getDay()], num:d.getDate(), ds:d.toISOString().split('T')[0] };
+    });
+    return {
+      hojeHour: d0.getHours() + d0.getMinutes() / 60,
+      weekDays: days,
+      mesStr: `${d0.getFullYear()}-${String(d0.getMonth() + 1).padStart(2, '0')}`,
+    };
+  }, []);
   const [selDay, setSelDay] = useState(weekDays[0].ds);
   const [modal,  setModal]  = useState(false);
   const [edit,   setEdit]   = useState(null);
   const scrollRef = useRef(null);
 
   useEffect(() => {
-    const h = hoje.getHours();
     const t = setTimeout(() => {
-      scrollRef.current?.scrollTo({ y: Math.max(0, (h - 2) * HOUR_H), animated:true });
+      scrollRef.current?.scrollTo({ y: Math.max(0, (Math.floor(hojeHour) - 2) * HOUR_H), animated:true });
     }, 200);
     return () => clearTimeout(t);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selDay]);
+  }, [selDay, hojeHour]);
 
-  const mesStr = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}`;
-  useEffect(() => { load(mesStr); }, []);
-  const dayEvs = events.filter(e => e.data === selDay);
-  const getTop = (hora) => {
+  useEffect(() => { load(mesStr); }, [load, mesStr]);
+
+  // Lookup de eventos do dia selecionado em O(eventos do dia) em vez de O(events)
+  const dayEvs = useMemo(
+    () => events.filter(e => e.data === selDay),
+    [events, selDay]
+  );
+  // Layout side-by-side calculado uma vez por mudança de dia/eventos
+  const dayLayout = useMemo(() => layoutDayEvents(dayEvs), [dayEvs]);
+
+  const getTop = useCallback((hora) => {
     const [h, m] = hora.split(':').map(Number);
     return h * HOUR_H + (m / 60) * HOUR_H;
-  };
+  }, []);
 
-  const handleSave = async (payload) => {
+  const handleSave = useCallback(async (payload) => {
     try {
       if (edit) await editEvent(edit.id, payload);
       else      await addEvent(payload);
     } catch (e) { Alert.alert('Erro', e.message); }
     setModal(false); setEdit(null);
-  };
+  }, [edit, editEvent, addEvent]);
 
-  const handleDel = async (id) => {
+  const handleDel = useCallback(async (id) => {
     try { await removeEvent(id); } catch (e) { Alert.alert('Erro', e.message); }
     setModal(false); setEdit(null);
-  };
+  }, [removeEvent]);
 
-  const openModal = (e = null) => { setEdit(e); setModal(true); };
+  const openModal = useCallback((e = null) => { setEdit(e); setModal(true); }, []);
 
   return (
     <View style={{ flex:1, backgroundColor:C.bg }}>
@@ -1900,7 +1984,7 @@ function CronogramaScreen({ onMenu }) {
           {selDay === weekDays[0].ds && (
             <View style={{
               position:'absolute', left:0, right:0,
-              top: hoje.getHours() * HOUR_H + (hoje.getMinutes() / 60) * HOUR_H,
+              top: hojeHour * HOUR_H,
               flexDirection:'row', alignItems:'center', zIndex:10,
             }}>
               <View style={{ width:10, height:10, borderRadius:5, backgroundColor:C.accent, marginLeft:-5 }}/>
@@ -1909,12 +1993,10 @@ function CronogramaScreen({ onMenu }) {
           )}
 
           {(() => {
-            const layout = layoutDayEvents(dayEvs);
-            // marginLeft:56 + marginRight:12 = 68px de margens no container
             const containerW = SW - 68;
             const COL_GAP = 3;
             return dayEvs.map(e => {
-              const { col, totalCols } = layout[e.id] || { col: 0, totalCols: 1 };
+              const { col, totalCols } = dayLayout[e.id] || { col: 0, totalCols: 1 };
               const colW   = (containerW - (totalCols - 1) * COL_GAP) / totalCols;
               const evLeft = col * (colW + COL_GAP);
               const evRight = containerW - evLeft - colW;
@@ -2474,12 +2556,8 @@ function TrackSlider({ value, max, onChange, onChanging, color, showTooltip = fa
 
 function MusicaScreen({ onMenu }) {
   const { C, T } = useTheme();
-  const { playing, currentTrack, volume, setVolume, play, pause, resume, stop, next, prev, looping, setLooping, position, duration, seekTo } = useMusic();
-
-  const fmtTime = (secs) => {
-    const s = Math.floor(secs);
-    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-  };
+  const { playing, currentTrack, volume, setVolume, play, pause, resume, stop, next, prev, looping, setLooping, seekTo } = useMusic();
+  const { position, duration } = useMusicPosition();
 
   return (
     <View style={{ flex:1, backgroundColor:C.bg }}>
@@ -2640,6 +2718,19 @@ function MusicaScreen({ onMenu }) {
 // TELA — CONFIG / PERSONALIZAÇÃO com foto de perfil
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Section: componente de módulo (não recriado por render de ConfigScreen).
+// Lê tema via useTheme — re-renderiza só quando o tema muda, não quando
+// inputs internos da config mudam.
+const Section = memo(function Section({ label, children }) {
+  const { C, T } = useTheme();
+  return (
+    <View style={{ backgroundColor:C.bg2, borderRadius:14, borderWidth:1, borderColor:C.border2, padding:16, gap:14 }}>
+      <Text style={[T.label, { color:C.text3 }]}>{label}</Text>
+      {children}
+    </View>
+  );
+});
+
 function ConfigScreen({ onMenu }) {
   const { C, T, themeId, fontFamily, fontSize, accentId, highContrast, setTheme, setFont, setSize, setAccent, toggleHC } = useTheme();
   const { currentUser, logout, updateAvatar, updateProfile } = useAuth();
@@ -2678,14 +2769,6 @@ function ConfigScreen({ onMenu }) {
     await updateProfile(newName.trim());
     setEditingName(false);
   };
-
-  // CORREÇÃO: Section movida para fora da função (evita recriação a cada render)
-  const Section = ({ label, children }) => (
-    <View style={{ backgroundColor:C.bg2, borderRadius:14, borderWidth:1, borderColor:C.border2, padding:16, gap:14 }}>
-      <Text style={[T.label, { color:C.text3 }]}>{label}</Text>
-      {children}
-    </View>
-  );
 
   return (
     <View style={{ flex:1, backgroundColor:C.bg }}>
