@@ -2286,13 +2286,14 @@ function HumorScreen({ onMenu }) {
 }
 
 // ─── Slider reutilizável (responder system, sem libs extras) ────────────────
-function TrackSlider({ value, max, onChange, color }) {
-  const [w, setW]  = useState(300);
+function TrackSlider({ value, max, onChange, onChanging, color, showTooltip = false, formatTooltip = v => String(Math.round(v)) }) {
+  const [w, setW]             = useState(300);
   const [display, setDisplay] = useState(value);
-  const wRef       = useRef(300);
-  const displayRef = useRef(value);
+  const [dragging, setDragging] = useState(false);
+  const wRef        = useRef(300);
+  const displayRef  = useRef(value);
   const draggingRef = useRef(false);
-  const gestureRef = useRef({ startPageX:0, startPageY:0, startVal:0, dir:null });
+  const gestureRef  = useRef({ startPageX:0, startPageY:0, startVal:0, dir:null });
 
   useEffect(() => {
     if (!draggingRef.current) {
@@ -2301,13 +2302,12 @@ function TrackSlider({ value, max, onChange, color }) {
     }
   }, [value]);
 
-  const ratio = max > 0 ? Math.min(1, Math.max(0, display / max)) : 0;
+  const ratio    = max > 0 ? Math.min(1, Math.max(0, display / max)) : 0;
+  const thumbLeft = Math.max(0, Math.min(ratio * w - 9, w - 18));
 
-  // Snap pelo locationX (relativo ao elemento — correto mesmo após scroll)
   const snapVal = (locationX) =>
     Math.max(0, Math.min(max, (locationX / wRef.current) * max));
 
-  // Delta em relação ao ponto de início do toque
   const valFromDx = (pageX) => {
     const delta = ((pageX - gestureRef.current.startPageX) / wRef.current) * max;
     return Math.max(0, Math.min(max, gestureRef.current.startVal + delta));
@@ -2315,7 +2315,7 @@ function TrackSlider({ value, max, onChange, color }) {
 
   return (
     <View
-      style={{ height:40, justifyContent:'center' }}
+      style={{ height:44, justifyContent:'center' }}
       onLayout={e => {
         wRef.current = e.nativeEvent.layout.width;
         setW(e.nativeEvent.layout.width);
@@ -2325,10 +2325,11 @@ function TrackSlider({ value, max, onChange, color }) {
       onResponderTerminationRequest={() => gestureRef.current.dir === 'v'}
       onResponderGrant={e => {
         draggingRef.current = true;
-        // Snap imediato: locationX é sempre relativo ao elemento, independente de scroll
+        setDragging(true);
         const snapped = snapVal(e.nativeEvent.locationX);
         displayRef.current = snapped;
         setDisplay(snapped);
+        onChanging?.(snapped);
         gestureRef.current = {
           startPageX: e.nativeEvent.pageX,
           startPageY: e.nativeEvent.pageY,
@@ -2339,7 +2340,6 @@ function TrackSlider({ value, max, onChange, color }) {
       onResponderMove={e => {
         const dx = Math.abs(e.nativeEvent.pageX - gestureRef.current.startPageX);
         const dy = Math.abs(e.nativeEvent.pageY - gestureRef.current.startPageY);
-        // Detecta direção após 3px — favorece horizontal (requer dy > 2×dx para ser vertical)
         if (!gestureRef.current.dir && (dx > 3 || dy > 3)) {
           gestureRef.current.dir = dy > dx * 2 ? 'v' : 'h';
         }
@@ -2347,6 +2347,7 @@ function TrackSlider({ value, max, onChange, color }) {
           const v = valFromDx(e.nativeEvent.pageX);
           displayRef.current = v;
           setDisplay(v);
+          onChanging?.(v);
         }
       }}
       onResponderRelease={e => {
@@ -2354,23 +2355,47 @@ function TrackSlider({ value, max, onChange, color }) {
           const v = valFromDx(e.nativeEvent.pageX);
           displayRef.current = v;
           setDisplay(v);
+          onChanging?.(v);
           onChange(v);
         }
         draggingRef.current = false;
+        setDragging(false);
       }}
       onResponderTerminate={() => {
         draggingRef.current = false;
+        setDragging(false);
         gestureRef.current.dir = null;
       }}
     >
-      <View style={{ height:4, borderRadius:2, backgroundColor:'rgba(128,128,128,0.25)', overflow:'hidden' }}>
+      {/* Tooltip de tempo — visível apenas durante drag */}
+      {showTooltip && dragging && (
+        <View style={{
+          position:'absolute', top:0,
+          left: Math.max(0, thumbLeft - 12),
+          backgroundColor: color,
+          paddingHorizontal:6, paddingVertical:2,
+          borderRadius:4, zIndex:10,
+        }}>
+          <Text style={{ color:'#fff', fontSize:10, fontWeight:'700' }}>
+            {formatTooltip(display)}
+          </Text>
+        </View>
+      )}
+
+      {/* Track */}
+      <View style={{ height:6, borderRadius:3, backgroundColor:'rgba(128,128,128,0.25)', overflow:'hidden' }}>
         <View style={{ width:`${Math.round(ratio * 100)}%`, height:'100%', backgroundColor:color }}/>
       </View>
+
+      {/* Thumb */}
       <View style={{
-        position:'absolute', top:12,
-        left: Math.max(0, ratio * w - 8),
-        width:16, height:16, borderRadius:8,
-        backgroundColor:color, elevation:3,
+        position:'absolute', top:13,
+        left: thumbLeft,
+        width:18, height:18, borderRadius:9,
+        backgroundColor:color,
+        elevation:4,
+        shadowColor:'#000', shadowOffset:{width:0,height:2},
+        shadowOpacity:0.25, shadowRadius:4,
       }}/>
     </View>
   );
