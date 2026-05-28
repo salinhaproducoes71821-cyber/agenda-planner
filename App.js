@@ -812,10 +812,15 @@ function PasswordStrengthBar({ password }) {
 
 function MiniPlayer() {
   const { C, T } = useTheme();
-  const { playing, currentTrack, pause, resume, stop } = useMusic();
+  const { playing, currentTrack, pause, resume, next, prev, position, duration } = useMusic();
   const insets = useSafeAreaInsets();
   if (!currentTrack) return null;
   const miniBottom = 16 + insets.bottom;
+  const fmtTime = (secs) => {
+    const s = Math.floor(secs);
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  };
+  const progressRatio = duration > 0 ? Math.min(1, position / duration) : 0;
   return (
     <View style={{
       position: 'absolute',
@@ -834,9 +839,25 @@ function MiniPlayer() {
       elevation: 8,
       gap: 12,
       zIndex: 50,
+      overflow: 'hidden',
     }}
     {...a11y('Player de música', 'Controles da música lo-fi')}
     >
+      {/* Barra de progresso na base do card */}
+      <View style={{
+        position:'absolute', bottom:0, left:0, right:0, height:2,
+        backgroundColor:'rgba(128,128,128,0.15)',
+        borderBottomLeftRadius:14, borderBottomRightRadius:14,
+      }}>
+        <View style={{
+          width:`${Math.round(progressRatio * 100)}%`,
+          height:'100%',
+          backgroundColor: C.accent,
+          borderBottomLeftRadius:14,
+        }}/>
+      </View>
+
+      {/* Ícone */}
       <View style={{
         width: 36, height: 36, borderRadius: 18,
         backgroundColor: C.accentBg,
@@ -844,15 +865,28 @@ function MiniPlayer() {
       }}>
         <Icon name="music" size={16} color={C.accent}/>
       </View>
+
+      {/* Nome + tempo */}
       <View style={{ flex: 1 }}>
         <Text style={[T.sm, { color: C.text, fontWeight:'700' }]} numberOfLines={1}>{currentTrack.name}</Text>
-        <Text style={[T.xs, { color: C.text3, marginTop:1 }]}>{currentTrack.bpm} · Lo-Fi</Text>
+        <Text style={[T.xs, { color: C.text3, marginTop:1 }]}>
+          {duration > 0 ? `${fmtTime(position)} / ${fmtTime(duration)}` : `${currentTrack.bpm} · Lo-Fi`}
+        </Text>
       </View>
+
+      {/* Prev */}
+      <TouchableOpacity onPress={prev} style={{ padding:8, minWidth:36, minHeight:36, alignItems:'center', justifyContent:'center' }} {...a11y('Faixa anterior')}>
+        <Icon name="prev" size={16} color={C.text2}/>
+      </TouchableOpacity>
+
+      {/* Play / Pause */}
       <TouchableOpacity onPress={playing ? pause : resume} style={{ padding:8, minWidth:36, minHeight:36, alignItems:'center', justifyContent:'center' }} {...a11y(playing ? 'Pausar' : 'Retomar')}>
         <Icon name={playing ? 'pause' : 'play'} size={18} color={C.accent}/>
       </TouchableOpacity>
-      <TouchableOpacity onPress={stop} style={{ padding:8, minWidth:36, minHeight:36, alignItems:'center', justifyContent:'center' }} {...a11y('Parar música')}>
-        <Icon name="stop" size={16} color={C.text3}/>
+
+      {/* Next */}
+      <TouchableOpacity onPress={next} style={{ padding:8, minWidth:36, minHeight:36, alignItems:'center', justifyContent:'center' }} {...a11y('Próxima faixa')}>
+        <Icon name="next" size={16} color={C.text2}/>
       </TouchableOpacity>
     </View>
   );
