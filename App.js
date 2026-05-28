@@ -166,6 +166,7 @@ const ICON_MAP = {
   tree:         'leaf-outline',
   train:        'train-outline',
   coffee:       'cafe-outline',
+  repeat:       'repeat-outline',
 };
 
 function Icon({ name, size = 16, color, style }) {
@@ -387,9 +388,12 @@ async function scheduleEventNotification(event) {
         title: event.titulo,
         body: `Em 10 minutos • ${event.hora}`,
         sound: event.alarmSound !== 'vibrate',
+      },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DATE,
+        date: trigger,
         ...(Platform.OS === 'android' && { channelId: 'lembretes' }),
       },
-      trigger: { date: trigger },
     });
     const stored = JSON.parse(await AsyncStorage.getItem('@ag_notif_ids') || '{}');
     stored[String(event.id)] = notifId;
@@ -1114,7 +1118,7 @@ function AuthScreen() {
           {/* Brand */}
           <View style={{ alignItems:'center', marginBottom:40 }}>
             <Image
-              source={require('./LogoNovaCorEnovosHighlights.png')}
+              source={require('./LogoNovaCorEnovosHighlightsNovo.png')}
               style={{ width:96, height:96, borderRadius:20, marginBottom:16 }}
               resizeMode="contain"
             />
@@ -2846,7 +2850,7 @@ function Root() {
   if (isLoading) return (
     <View style={{ flex:1, backgroundColor:C.bg, alignItems:'center', justifyContent:'center', gap:20 }}>
       <Image
-        source={require('./LogoNovaCorEnovosHighlights.png')}
+        source={require('./LogoNovaCorEnovosHighlightsNovo.png')}
         style={{ width:100, height:100, borderRadius:20 }}
         resizeMode="contain"
       />
