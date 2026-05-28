@@ -4,16 +4,16 @@
     "slug": "agenda-planner",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./LogoNovaCorEnovosHighlights.png",
+    "icon": "./LogoNovaCorEnovosHighlightsNovo.png",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "image": "./LogoNovaCorEnovosHighlights.png",
+      "image": "./LogoNovaCorEnovosHighlightsNovo.png",
       "resizeMode": "contain",
       "backgroundColor": "#1a1a2e"
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./LogoNovaCorEnovosHighlights.png",
+        "foregroundImage": "./LogoNovaCorEnovosHighlightsNovo.png",
         "backgroundColor": "#1a1a2e"
       },
       "package": "com.agendaplanner.app",
@@ -33,11 +33,12 @@
       [
         "expo-notifications",
         {
-          "icon": "./LogoNovaCorEnovosHighlights.png",
+          "icon": "./LogoNovaCorEnovosHighlightsNovo.png",
           "color": "#1a1a2e",
           "defaultChannel": "lembretes"
         }
-      ]
+      ],
+      "expo-audio"
     ],
     "extra": {
       "eas": {
