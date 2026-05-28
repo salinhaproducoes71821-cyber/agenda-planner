@@ -23,7 +23,7 @@ import {
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
-import { Audio } from 'expo-av';
+import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
@@ -559,9 +559,8 @@ function MusicProvider({ children }) {
   const [volume,       setVolume]       = useState(0.6);
   const [position,     setPosition]     = useState(0);
   const [duration,     setDuration]     = useState(0);
-  const soundRef        = useRef(null);
-  const seekTargetRef   = useRef(null);
-  const genRef          = useRef(0);
+  const playerRef       = useRef(null);
+  const seekingRef      = useRef(false);
   const currentTrackRef = useRef(null);
   const [looping,    setLooping]    = useState(false);
   const loopingRef = useRef(false);
@@ -570,80 +569,76 @@ function MusicProvider({ children }) {
   useEffect(() => { loopingRef.current = looping; }, [looping]);
 
   useEffect(() => {
-    Audio.setAudioModeAsync({ playsInSilentModeIOS: true, staysActiveInBackground: true }).catch(() => {});
+    setAudioModeAsync({ playsInSilentMode: true, shouldPlayInBackground: true }).catch(() => {});
     AsyncStorage.getItem('@ag_music_volume').then(v => {
       if (v !== null) setVolume(parseFloat(v));
     }).catch(() => {});
-    return () => { soundRef.current?.unloadAsync().catch(() => {}); };
+    return () => { playerRef.current?.remove(); playerRef.current = null; };
   }, []);
 
   useEffect(() => {
-    soundRef.current?.setVolumeAsync(volume).catch(() => {});
+    if (playerRef.current) playerRef.current.volume = volume;
     AsyncStorage.setItem('@ag_music_volume', String(volume)).catch(() => {});
   }, [volume]);
 
-  const play = async (track) => {
-    const gen = ++genRef.current;
-    const prev = soundRef.current;
-    soundRef.current = null;
-    try {
-      if (prev) await prev.unloadAsync().catch(() => {});
-      if (gen !== genRef.current) return; // outra chamada de play() chegou, abandona
-      setPosition(0); setDuration(0); seekTargetRef.current = null;
-      const { sound } = await Audio.Sound.createAsync(
-        { uri: track.url },
-        { shouldPlay: true, volume },
-      );
-      if (gen !== genRef.current) { sound.unloadAsync().catch(() => {}); return; }
-      soundRef.current = sound;
-      setCurrentTrack(track);
-      setPlaying(true);
-      sound.setOnPlaybackStatusUpdate(s => {
-        if (gen !== genRef.current) return; // callback de som antigo, ignora
-        if (s.isLoaded) {
-          if (seekTargetRef.current !== null) return; // seek em andamento, ignora todos os updates
-          const pos = (s.positionMillis || 0) / 1000;
-          setPosition(pos);
-          if (s.durationMillis) setDuration(s.durationMillis / 1000);
+  // Listener de status — usa apenas refs e setters estáveis, sem stale closure
+  const handleStatus = (s) => {
+    if (!s.isLoaded) return;
+    if (seekingRef.current) return;
+    setPosition(s.currentTime);
+    if (s.duration) setDuration(s.duration);
+    if (s.didJustFinish) {
+      setPlaying(false); setPosition(0);
+      if (loopingRef.current) {
+        playerRef.current?.seekTo(0)
+          .then(() => { playerRef.current?.play(); setPlaying(true); })
+          .catch(() => {});
+      } else {
+        const cur = currentTrackRef.current;
+        if (cur) {
+          const idx = LOFI_TRACKS.findIndex(t => t.id === cur.id);
+          const nt = LOFI_TRACKS[(idx + 1) % LOFI_TRACKS.length];
+          playerRef.current?.replace({ uri: nt.url });
+          playerRef.current?.play();
+          setCurrentTrack(nt); currentTrackRef.current = nt;
+          setPosition(0); setDuration(0); setPlaying(true);
         }
-        if (s.didJustFinish) {
-          setPlaying(false);
-          setPosition(0);
-          if (loopingRef.current) {
-            soundRef.current?.setPositionAsync(0)
-              .then(() => soundRef.current?.playAsync())
-              .then(() => setPlaying(true))
-              .catch(() => {});
-          } else {
-            const cur = currentTrackRef.current;
-            if (cur) {
-              const idx = LOFI_TRACKS.findIndex(t => t.id === cur.id);
-              play(LOFI_TRACKS[(idx + 1) % LOFI_TRACKS.length]);
-            }
-          }
-        }
-      });
-    } catch (_) {
-      if (gen === genRef.current) Alert.alert('Erro', 'Não foi possível reproduzir esta faixa.');
+      }
     }
   };
 
-  const pause  = async () => { await soundRef.current?.pauseAsync().catch(() => {}); setPlaying(false); };
-  const resume = async () => { await soundRef.current?.playAsync().catch(() => {});  setPlaying(true);  };
-  const stop   = async () => {
-    genRef.current++; // invalida qualquer play() em andamento
-    const prev = soundRef.current;
-    soundRef.current = null; seekTargetRef.current = null;
-    if (prev) { await prev.stopAsync().catch(() => {}); await prev.unloadAsync().catch(() => {}); }
+  const play = async (track) => {
+    try {
+      if (!playerRef.current) {
+        const p = createAudioPlayer({ uri: track.url }, { updateInterval: 500 });
+        p.volume = volume;
+        p.addListener('playbackStatusUpdate', handleStatus);
+        playerRef.current = p;
+      } else {
+        playerRef.current.replace({ uri: track.url });
+      }
+      playerRef.current.volume = volume;
+      playerRef.current.play();
+      setCurrentTrack(track); setPlaying(true); setPosition(0); setDuration(0);
+    } catch (_) {
+      Alert.alert('Erro', 'Não foi possível reproduzir esta faixa.');
+    }
+  };
+
+  const pause  = () => { playerRef.current?.pause(); setPlaying(false); };
+  const resume = () => { playerRef.current?.play();  setPlaying(true);  };
+  const stop   = () => {
+    playerRef.current?.pause();
     setPlaying(false); setCurrentTrack(null); setPosition(0); setDuration(0);
+    currentTrackRef.current = null;
   };
   const seekTo = async (secs) => {
     try {
-      seekTargetRef.current = secs;
-      await soundRef.current?.setPositionAsync(Math.round(secs * 1000));
-      seekTargetRef.current = null;
+      seekingRef.current = true;
+      await playerRef.current?.seekTo(secs);
+      seekingRef.current = false;
       setPosition(secs);
-    } catch (_) { seekTargetRef.current = null; }
+    } catch (_) { seekingRef.current = false; }
   };
 
   const next = async () => {
