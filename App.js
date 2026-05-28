@@ -2445,7 +2445,7 @@ function TrackSlider({ value, max, onChange, onChanging, color, showTooltip = fa
 
 function MusicaScreen({ onMenu }) {
   const { C, T } = useTheme();
-  const { playing, currentTrack, volume, setVolume, play, pause, resume, stop, position, duration, seekTo } = useMusic();
+  const { playing, currentTrack, volume, setVolume, play, pause, resume, stop, next, prev, looping, setLooping, position, duration, seekTo } = useMusic();
 
   const fmtTime = (secs) => {
     const s = Math.floor(secs);
@@ -2484,6 +2484,8 @@ function MusicaScreen({ onMenu }) {
                     value={position}
                     max={duration > 0 ? duration : 1}
                     onChange={seekTo}
+                    showTooltip
+                    formatTooltip={fmtTime}
                     color={C.accent}
                   />
                   <View style={{ flexDirection:'row', justifyContent:'space-between' }}>
@@ -2492,21 +2494,56 @@ function MusicaScreen({ onMenu }) {
                   </View>
                 </View>
 
-                <View style={{ flexDirection:'row', gap:16, alignItems:'center' }}>
-                  <TouchableOpacity style={{ padding:12, minWidth:44, minHeight:44, alignItems:'center', justifyContent:'center' }} onPress={stop} {...a11y('Parar')}>
-                    <Icon name="stop" size={22} color={C.text3}/>
-                  </TouchableOpacity>
+                <View style={{ flexDirection:'row', gap:12, alignItems:'center' }}>
+                  {/* Loop */}
                   <TouchableOpacity
                     style={{
-                      width:60, height:60, borderRadius:30,
-                      backgroundColor:C.accent, alignItems:'center', justifyContent:'center',
+                      width:36, height:36, borderRadius:8,
+                      borderWidth:1.5,
+                      borderColor: looping ? C.accent : C.border,
+                      alignItems:'center', justifyContent:'center',
                     }}
+                    onPress={() => setLooping(l => !l)}
+                    {...a11y(looping ? 'Desativar loop' : 'Ativar loop')}
+                  >
+                    <Icon name="repeat" size={16} color={looping ? C.accent : C.text3}/>
+                  </TouchableOpacity>
+
+                  {/* Prev */}
+                  <TouchableOpacity
+                    style={{ width:40, height:40, borderRadius:20, backgroundColor:C.bg3, alignItems:'center', justifyContent:'center' }}
+                    onPress={prev}
+                    {...a11y('Faixa anterior')}
+                  >
+                    <Icon name="prev" size={20} color={C.text2}/>
+                  </TouchableOpacity>
+
+                  {/* Play / Pause */}
+                  <TouchableOpacity
+                    style={{ width:60, height:60, borderRadius:30, backgroundColor:C.accent, alignItems:'center', justifyContent:'center' }}
                     onPress={playing ? pause : resume}
                     {...a11y(playing ? 'Pausar' : 'Continuar')}
                   >
                     <Icon name={playing ? 'pause' : 'play'} size={24} color="#fff"/>
                   </TouchableOpacity>
-                  <View style={{ width:44 }}/>
+
+                  {/* Next */}
+                  <TouchableOpacity
+                    style={{ width:40, height:40, borderRadius:20, backgroundColor:C.bg3, alignItems:'center', justifyContent:'center' }}
+                    onPress={next}
+                    {...a11y('Próxima faixa')}
+                  >
+                    <Icon name="next" size={20} color={C.text2}/>
+                  </TouchableOpacity>
+
+                  {/* Stop */}
+                  <TouchableOpacity
+                    style={{ width:36, height:36, borderRadius:8, alignItems:'center', justifyContent:'center' }}
+                    onPress={stop}
+                    {...a11y('Parar')}
+                  >
+                    <Icon name="stop" size={20} color={C.text3}/>
+                  </TouchableOpacity>
                 </View>
               </>
             : <Text style={[T.base, { color:C.text3, textAlign:'center' }]}>
@@ -2524,6 +2561,7 @@ function MusicaScreen({ onMenu }) {
             <TrackSlider
               value={volume}
               max={1}
+              onChanging={setVolume}
               onChange={setVolume}
               color={C.accent}
             />
