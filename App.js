@@ -559,17 +559,27 @@ function MusicProvider({ children }) {
   const [volume,       setVolume]       = useState(0.6);
   const [position,     setPosition]     = useState(0);
   const [duration,     setDuration]     = useState(0);
-  const soundRef      = useRef(null);
-  const seekTargetRef = useRef(null);
-  const genRef        = useRef(0); // geração — cancela play() em voo quando nova requisição chega
+  const soundRef        = useRef(null);
+  const seekTargetRef   = useRef(null);
+  const genRef          = useRef(0);
+  const currentTrackRef = useRef(null);
+  const [looping,    setLooping]    = useState(false);
+  const loopingRef = useRef(false);
+
+  useEffect(() => { currentTrackRef.current = currentTrack; }, [currentTrack]);
+  useEffect(() => { loopingRef.current = looping; }, [looping]);
 
   useEffect(() => {
     Audio.setAudioModeAsync({ playsInSilentModeIOS: true, staysActiveInBackground: true }).catch(() => {});
+    AsyncStorage.getItem('@ag_music_volume').then(v => {
+      if (v !== null) setVolume(parseFloat(v));
+    }).catch(() => {});
     return () => { soundRef.current?.unloadAsync().catch(() => {}); };
   }, []);
 
   useEffect(() => {
     soundRef.current?.setVolumeAsync(volume).catch(() => {});
+    AsyncStorage.setItem('@ag_music_volume', String(volume)).catch(() => {});
   }, [volume]);
 
   const play = async (track) => {
@@ -596,7 +606,22 @@ function MusicProvider({ children }) {
           setPosition(pos);
           if (s.durationMillis) setDuration(s.durationMillis / 1000);
         }
-        if (s.didJustFinish) { setPlaying(false); setPosition(0); }
+        if (s.didJustFinish) {
+          setPlaying(false);
+          setPosition(0);
+          if (loopingRef.current) {
+            soundRef.current?.setPositionAsync(0)
+              .then(() => soundRef.current?.playAsync())
+              .then(() => setPlaying(true))
+              .catch(() => {});
+          } else {
+            const cur = currentTrackRef.current;
+            if (cur) {
+              const idx = LOFI_TRACKS.findIndex(t => t.id === cur.id);
+              play(LOFI_TRACKS[(idx + 1) % LOFI_TRACKS.length]);
+            }
+          }
+        }
       });
     } catch (_) {
       if (gen === genRef.current) Alert.alert('Erro', 'Não foi possível reproduzir esta faixa.');
@@ -621,8 +646,21 @@ function MusicProvider({ children }) {
     } catch (_) { seekTargetRef.current = null; }
   };
 
+  const next = async () => {
+    if (!currentTrackRef.current) return;
+    const idx = LOFI_TRACKS.findIndex(t => t.id === currentTrackRef.current.id);
+    await play(LOFI_TRACKS[(idx + 1) % LOFI_TRACKS.length]);
+  };
+
+  const prev = async () => {
+    if (!currentTrackRef.current) return;
+    if (position > 3) { await seekTo(0); return; }
+    const idx = LOFI_TRACKS.findIndex(t => t.id === currentTrackRef.current.id);
+    await play(LOFI_TRACKS[(idx - 1 + LOFI_TRACKS.length) % LOFI_TRACKS.length]);
+  };
+
   return (
-    <MusicContext.Provider value={{ playing, currentTrack, volume, setVolume, play, pause, resume, stop, position, duration, seekTo }}>
+    <MusicContext.Provider value={{ playing, currentTrack, volume, setVolume, play, pause, resume, stop, next, prev, looping, setLooping, position, duration, seekTo }}>
       {children}
     </MusicContext.Provider>
   );
