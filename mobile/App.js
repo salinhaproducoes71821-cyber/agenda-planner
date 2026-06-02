@@ -114,10 +114,9 @@ const LOFI_TRACKS = [
 ];
 
 const ALARM_SOUNDS = [
-  { id:'gentle',   name:'Suave',      icon:'bell',       description:'Acorda devagar' },
-  { id:'birds',    name:'Pássaros',   icon:'feather',    description:'Sons da natureza' },
-  { id:'piano',    name:'Piano',      icon:'music',      description:'Notas delicadas' },
-  { id:'classic',  name:'Clássico',   icon:'clock',      description:'Tradicional' },
+  { id:'classic',  name:'Clássico',   icon:'clock',      description:'Over the Horizon' },
+  { id:'piano',    name:'Piano',      icon:'music',      description:'Nokia Piano' },
+  { id:'birds',    name:'Pássaros',   icon:'feather',    description:'Ringtone Bird' },
   { id:'vibrate',  name:'Vibração',   icon:'smartphone', description:'Apenas vibrar' },
 ];
 
@@ -351,19 +350,17 @@ const SECURITY = {
 // Escolha de som → arquivo de áudio (assets/sounds) e canal Android dedicado.
 // Cada som precisa do seu próprio canal porque o Android congela o som no canal.
 const SOUND_FILES = {
-  gentle:  'gentle.wav',
-  birds:   'birds.wav',
-  piano:   'piano.wav',
-  classic: 'classic.wav',
+  classic: 'classic.mp3',
+  piano:   'piano.mp3',
+  birds:   'birds.mp3',
 };
 const SOUND_CHANNELS = {
-  gentle:  'lembrete-gentle',
-  birds:   'lembrete-birds',
-  piano:   'lembrete-piano',
   classic: 'lembrete-classic',
+  piano:   'lembrete-piano',
+  birds:   'lembrete-birds',
   vibrate: 'lembrete-vibrate',
 };
-const DEFAULT_SOUND_KEY = 'gentle';
+const DEFAULT_SOUND_KEY = 'classic';
 
 async function scheduleEventNotification(event) {
   if (!event?.lembrete || event._offline) return;
@@ -1475,7 +1472,7 @@ function EventModal({ visible, event, defaultDate, onSave, onDelete, onClose }) 
   const [hora,       setHora]       = useState('09:00');
   const [cor,        setCor]        = useState(EVENT_COLORS[0]);
   const [lembrete,   setLembrete]   = useState(false);
-  const [alarmSound, setAlarmSound] = useState('gentle');
+  const [alarmSound, setAlarmSound] = useState('classic');
   const [descricao,  setDescricao]  = useState('');
 
   useEffect(() => {
@@ -1485,7 +1482,7 @@ function EventModal({ visible, event, defaultDate, onSave, onDelete, onClose }) 
       setHora(event?.hora          || '09:00');
       setCor(event?.cor            || EVENT_COLORS[0]);
       setLembrete(event?.lembrete  ?? false);
-      setAlarmSound(event?.alarmSound || 'gentle');
+      setAlarmSound(['classic','piano','birds','vibrate'].includes(event?.alarmSound) ? event.alarmSound : 'classic');
       setDescricao(event?.descricao  || '');
     }
   }, [visible, event, defaultDate]);
@@ -1606,7 +1603,7 @@ function EventModal({ visible, event, defaultDate, onSave, onDelete, onClose }) 
             )}
           </ScrollView>
 
-          <View style={{ flexDirection:'row', gap:10, paddingHorizontal:16, paddingTop:16, paddingBottom: 16 + insets.bottom, borderTopWidth:1, borderTopColor:C.border }}>
+          <View style={{ flexDirection:'row', gap:18, paddingHorizontal:16, paddingTop:16, paddingBottom: 16 + insets.bottom, borderTopWidth:1, borderTopColor:C.border }}>
             {event && (
               <Btn onPress={del} variant="danger" style={{ paddingHorizontal:16 }} label="Excluir evento" hint="Remove o evento permanentemente">
                 <Icon name="delete" size={16} color="#fff"/>
@@ -3116,10 +3113,9 @@ function Root() {
             importance: Notifications.AndroidImportance.HIGH,
             vibrationPattern: [0, 250, 250, 250],
           };
-          await Notifications.setNotificationChannelAsync('lembrete-gentle',  { name: 'Lembrete · Suave',    sound: 'gentle.wav',  ...base });
-          await Notifications.setNotificationChannelAsync('lembrete-birds',   { name: 'Lembrete · Pássaros', sound: 'birds.wav',   ...base });
-          await Notifications.setNotificationChannelAsync('lembrete-piano',   { name: 'Lembrete · Piano',    sound: 'piano.wav',   ...base });
-          await Notifications.setNotificationChannelAsync('lembrete-classic', { name: 'Lembrete · Clássico', sound: 'classic.wav', ...base });
+          await Notifications.setNotificationChannelAsync('lembrete-classic', { name: 'Lembrete · Clássico', sound: 'classic.mp3', ...base });
+          await Notifications.setNotificationChannelAsync('lembrete-piano',   { name: 'Lembrete · Piano',    sound: 'piano.mp3',   ...base });
+          await Notifications.setNotificationChannelAsync('lembrete-birds',   { name: 'Lembrete · Pássaros', sound: 'birds.mp3',   ...base });
           await Notifications.setNotificationChannelAsync('lembrete-vibrate', { name: 'Lembrete · Vibração', sound: null, vibrationPattern: [0, 400, 200, 400], importance: Notifications.AndroidImportance.HIGH });
         }
         const { status: existing } = await Notifications.getPermissionsAsync();

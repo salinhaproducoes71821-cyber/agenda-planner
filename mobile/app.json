@@ -36,10 +36,9 @@
           "icon": "./LogoAmarelaTestes.png",
           "color": "#1a1a2e",
           "sounds": [
-            "./assets/sounds/gentle.wav",
-            "./assets/sounds/birds.wav",
-            "./assets/sounds/piano.wav",
-            "./assets/sounds/classic.wav"
+            "./assets/sounds/classic.mp3",
+            "./assets/sounds/piano.mp3",
+            "./assets/sounds/birds.mp3"
           ]
         }
       ],
