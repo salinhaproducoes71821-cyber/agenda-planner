@@ -35,7 +35,12 @@
         {
           "icon": "./LogoAmarelaTestes.png",
           "color": "#1a1a2e",
-          "defaultChannel": "lembretes"
+          "sounds": [
+            "./assets/sounds/gentle.wav",
+            "./assets/sounds/birds.wav",
+            "./assets/sounds/piano.wav",
+            "./assets/sounds/classic.wav"
+          ]
         }
       ],
       "expo-audio"

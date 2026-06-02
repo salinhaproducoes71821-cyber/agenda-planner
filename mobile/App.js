@@ -348,25 +348,55 @@ const SECURITY = {
 // NOTIFICAÇÕES — agenda/cancela lembretes locais
 // ═══════════════════════════════════════════════════════════════════════════
 
+// Escolha de som → arquivo de áudio (assets/sounds) e canal Android dedicado.
+// Cada som precisa do seu próprio canal porque o Android congela o som no canal.
+const SOUND_FILES = {
+  gentle:  'gentle.wav',
+  birds:   'birds.wav',
+  piano:   'piano.wav',
+  classic: 'classic.wav',
+};
+const SOUND_CHANNELS = {
+  gentle:  'lembrete-gentle',
+  birds:   'lembrete-birds',
+  piano:   'lembrete-piano',
+  classic: 'lembrete-classic',
+  vibrate: 'lembrete-vibrate',
+};
+const DEFAULT_SOUND_KEY = 'gentle';
+
 async function scheduleEventNotification(event) {
   if (!event?.lembrete || event._offline) return;
   try {
     await cancelEventNotification(event.id);
     const [y, mo, d] = event.data.split('-').map(Number);
     const [h, m]     = event.hora.split(':').map(Number);
-    const trigger    = new Date(y, mo - 1, d, h, m, 0);
-    trigger.setMinutes(trigger.getMinutes() - 10);
-    if (trigger <= new Date()) return; // já passou
+    const eventTime  = new Date(y, mo - 1, d, h, m, 0);
+    const now        = new Date();
+    if (eventTime <= now) return; // evento já passou
+
+    // Lembrete 10 min antes. Se faltam menos de 10 min, avisa em 3s
+    // (em vez de descartar silenciosamente — isso fazia parecer quebrado).
+    let trigger = new Date(eventTime.getTime() - 10 * 60 * 1000);
+    if (trigger <= now) trigger = new Date(now.getTime() + 3000);
+    const leadMin = Math.max(0, Math.round((eventTime.getTime() - trigger.getTime()) / 60000));
+    const body    = leadMin >= 1 ? `Em ${leadMin} min • ${event.hora}` : `Agora • ${event.hora}`;
+
+    const isVibrate = event.alarmSound === 'vibrate';
+    const soundKey  = SOUND_FILES[event.alarmSound] ? event.alarmSound : DEFAULT_SOUND_KEY;
+    const channelId = SOUND_CHANNELS[event.alarmSound] || SOUND_CHANNELS[DEFAULT_SOUND_KEY];
+
     const notifId = await Notifications.scheduleNotificationAsync({
       content: {
         title: event.titulo,
-        body: `Em 10 minutos • ${event.hora}`,
-        sound: event.alarmSound !== 'vibrate' ? 'default' : null,
+        body,
+        // iOS toca o som do conteúdo; no Android quem manda é o som do canal.
+        sound: isVibrate ? null : SOUND_FILES[soundKey],
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DATE,
         date: trigger,
-        ...(Platform.OS === 'android' && { channelId: 'lembretes' }),
+        ...(Platform.OS === 'android' && { channelId }),
       },
     });
     const stored = JSON.parse(await AsyncStorage.getItem('@ag_notif_ids') || '{}');
@@ -3080,12 +3110,17 @@ function Root() {
     (async () => {
       try {
         if (Platform.OS === 'android') {
-          await Notifications.setNotificationChannelAsync('lembretes', {
-            name: 'Lembretes de Eventos',
+          // Um canal por som — o Android congela o som no momento da criação,
+          // então cada opção precisa do seu próprio canal.
+          const base = {
             importance: Notifications.AndroidImportance.HIGH,
             vibrationPattern: [0, 250, 250, 250],
-            sound: 'default',
-          });
+          };
+          await Notifications.setNotificationChannelAsync('lembrete-gentle',  { name: 'Lembrete · Suave',    sound: 'gentle.wav',  ...base });
+          await Notifications.setNotificationChannelAsync('lembrete-birds',   { name: 'Lembrete · Pássaros', sound: 'birds.wav',   ...base });
+          await Notifications.setNotificationChannelAsync('lembrete-piano',   { name: 'Lembrete · Piano',    sound: 'piano.wav',   ...base });
+          await Notifications.setNotificationChannelAsync('lembrete-classic', { name: 'Lembrete · Clássico', sound: 'classic.wav', ...base });
+          await Notifications.setNotificationChannelAsync('lembrete-vibrate', { name: 'Lembrete · Vibração', sound: null, vibrationPattern: [0, 400, 200, 400], importance: Notifications.AndroidImportance.HIGH });
         }
         const { status: existing } = await Notifications.getPermissionsAsync();
         if (existing !== 'granted') {
