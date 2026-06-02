@@ -1983,6 +1983,7 @@ function layoutDayEvents(evs) {
 function CronogramaScreen({ onMenu }) {
   const { C, T } = useTheme();
   const { events, load, addEvent, editEvent, removeEvent } = useEvents();
+  const { currentTrack } = useMusic(); // p/ folga no fim da timeline quando o player está visível
   // hoje + weekDays só uma vez por sessão (não recalcula a cada render/seleção)
   const { hojeHour, weekDays, mesStr } = useMemo(() => {
     const d0 = new Date();
@@ -2084,7 +2085,9 @@ function CronogramaScreen({ onMenu }) {
         ))}
       </ScrollView>
 
-      <ScrollView ref={scrollRef} style={{ flex:1 }} showsVerticalScrollIndicator={false}>
+      <ScrollView ref={scrollRef} style={{ flex:1 }} showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: currentTrack ? 120 : 16 }}
+      >
         <View style={{ position:'relative', height:24 * HOUR_H, marginLeft:56, marginRight:12 }}>
           {Array.from({ length:24 }, (_, h) => (
             <View key={h} style={{
