@@ -1,22 +1,22 @@
 {
   "expo": {
-    "name": "Agenda Planner",
-    "slug": "agenda-planner",
+    "name": "Agenda Testes",
+    "slug": "agenda-testes",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./LogoNovaCorEnovosHighlightsNovo.png",
+    "icon": "./LogoAmarelaTestes.png",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "image": "./LogoNovaCorEnovosHighlightsNovo.png",
+      "image": "./LogoAmarelaTestes.png",
       "resizeMode": "contain",
       "backgroundColor": "#1a1a2e"
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./LogoNovaCorEnovosHighlightsNovo.png",
+        "foregroundImage": "./LogoAmarelaTestes.png",
         "backgroundColor": "#1a1a2e"
       },
-      "package": "com.agendaplanner.app",
+      "package": "com.agendaplanner.testes",
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.RECORD_AUDIO",
@@ -32,7 +32,7 @@
       [
         "expo-notifications",
         {
-          "icon": "./LogoNovaCorEnovosHighlightsNovo.png",
+          "icon": "./LogoAmarelaTestes.png",
           "color": "#1a1a2e",
           "defaultChannel": "lembretes"
         }

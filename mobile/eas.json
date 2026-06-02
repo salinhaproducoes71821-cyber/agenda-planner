@@ -1,0 +1,30 @@
+{
+  "cli": {
+    "version": ">= 16.0.0",
+    "promptToConfigurePushNotifications": false
+  },
+  "build": {
+    "preview": {
+      "android": {
+        "buildType": "apk"
+      },
+      "cache": {
+        "key": "preview-v1-{{ checksum \"package-lock.json\" }}"
+      },
+      "env": {
+        "EXPO_NO_TELEMETRY": "1"
+      }
+    },
+    "production": {
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "cache": {
+        "key": "production-v1-{{ checksum \"package-lock.json\" }}"
+      },
+      "env": {
+        "EXPO_NO_TELEMETRY": "1"
+      }
+    }
+  }
+}

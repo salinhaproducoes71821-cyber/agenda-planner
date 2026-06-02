@@ -1,0 +1,16 @@
+# ─── EAS Build ignore ─────────────────────────────────────────────────────────
+# Todos os arquivos do backend já ficam em /server, fora desta pasta.
+# Aqui só excluímos o que ainda pode aparecer em /mobile.
+node_modules/
+.expo/
+dist/
+web-build/
+.metro-health-check*
+*.log
+.DS_Store
+Thumbs.db
+*.orig.*
+*.bak
+
+# Logo antiga — não usada no app.json atual
+LogoNovaCorEnovosHighlightsNovo.png

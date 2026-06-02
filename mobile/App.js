@@ -358,7 +358,7 @@ async function scheduleEventNotification(event) {
       content: {
         title: event.titulo,
         body: `Em 10 minutos • ${event.hora}`,
-        sound: event.alarmSound !== 'vibrate',
+        sound: event.alarmSound !== 'vibrate' ? 'default' : null,
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DATE,
@@ -480,6 +480,10 @@ function EventsProvider({ children }) {
       const data = await api.getEvents(mes);
       setIsOffline(false);
       applyEvents(data, mes);
+      // Reagenda notificações para eventos futuros com lembrete ativo
+      data.filter(e => e.lembrete).forEach(ev => {
+        scheduleEventNotification(ev).catch(() => {});
+      });
       // Tenta sincronizar operações pendentes agora que estamos online
       api.flushQueue(() => load(mes)).catch(() => {});
     } catch (_) {
@@ -1228,7 +1232,7 @@ function AuthScreen() {
           {/* Brand */}
           <View style={{ alignItems:'center', marginBottom:40 }}>
             <Image
-              source={require('./LogoNovaCorEnovosHighlightsNovo.png')}
+              source={require('./LogoAmarelaTestes.png')}
               style={{ width:96, height:96, borderRadius:20, marginBottom:16 }}
               resizeMode="contain"
             />
@@ -3055,7 +3059,11 @@ function Root() {
             sound: 'default',
           });
         }
-        await Notifications.requestPermissionsAsync();
+        const { status: existing } = await Notifications.getPermissionsAsync();
+        if (existing !== 'granted') {
+          const { status: asked } = await Notifications.requestPermissionsAsync();
+          if (asked !== 'granted') return;
+        }
       } catch (_) {}
     })();
   }, []);
@@ -3063,7 +3071,7 @@ function Root() {
   if (isLoading) return (
     <View style={{ flex:1, backgroundColor:C.bg, alignItems:'center', justifyContent:'center', gap:20 }}>
       <Image
-        source={require('./LogoNovaCorEnovosHighlightsNovo.png')}
+        source={require('./LogoAmarelaTestes.png')}
         style={{ width:100, height:100, borderRadius:20 }}
         resizeMode="contain"
       />
