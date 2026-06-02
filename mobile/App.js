@@ -19,7 +19,7 @@ import {
   View, Text, TextInput, TouchableOpacity, StyleSheet, FlatList,
   ScrollView, Modal, Alert, ActivityIndicator, KeyboardAvoidingView,
   Platform, StatusBar, Animated, Dimensions, Easing,
-  TouchableWithoutFeedback, Image, Switch,
+  TouchableWithoutFeedback, Image, Switch, Vibration,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -361,6 +361,13 @@ const SOUND_CHANNELS = {
   vibrate: 'lembrete-vibrate',
 };
 const DEFAULT_SOUND_KEY = 'classic';
+
+// Assets locais para o preview do som ao tocar na opção (editar evento)
+const SOUND_ASSETS = {
+  classic: require('./assets/sounds/classic.mp3'),
+  piano:   require('./assets/sounds/piano.mp3'),
+  birds:   require('./assets/sounds/birds.mp3'),
+};
 
 async function scheduleEventNotification(event) {
   if (!event?.lembrete || event._offline) return;
@@ -1487,6 +1494,51 @@ function EventModal({ visible, event, defaultDate, onSave, onDelete, onClose }) 
     }
   }, [visible, event, defaultDate]);
 
+  // ── Preview do som ao tocar numa opção ──────────────────────────────────────
+  const { playing: musicPlaying, pause: pauseMusic, resume: resumeMusic } = useMusic();
+  const previewRef         = useRef(null);
+  const musicPausedByUsRef = useRef(false);
+
+  const stopPreview = useCallback(() => {
+    try { previewRef.current?.remove(); } catch (_) {}
+    previewRef.current = null;
+    try { Vibration.cancel(); } catch (_) {}
+    if (musicPausedByUsRef.current) {
+      musicPausedByUsRef.current = false;
+      try { resumeMusic(); } catch (_) {}
+    }
+  }, [resumeMusic]);
+
+  const playPreview = useCallback((id) => {
+    // encerra o áudio anterior (mantém a lo-fi pausada entre trocas de opção)
+    try { previewRef.current?.remove(); } catch (_) {}
+    previewRef.current = null;
+    try { Vibration.cancel(); } catch (_) {}
+
+    if (id === 'vibrate') {
+      Vibration.vibrate([0, 400, 200, 400]);
+      return;
+    }
+    const src = SOUND_ASSETS[id];
+    if (!src) return;
+    // pausa a lo-fi pra não sobrepor o preview (retomada ao fechar)
+    if (musicPlaying && !musicPausedByUsRef.current) {
+      musicPausedByUsRef.current = true;
+      try { pauseMusic(); } catch (_) {}
+    }
+    try {
+      const p = createAudioPlayer(src);
+      p.volume = 1;
+      p.play();
+      previewRef.current = p;
+    } catch (_) {}
+  }, [musicPlaying, pauseMusic]);
+
+  // Para o preview ao fechar o modal, ao desligar o lembrete e ao desmontar
+  useEffect(() => { if (!visible) stopPreview(); }, [visible, stopPreview]);
+  useEffect(() => { if (!lembrete) stopPreview(); }, [lembrete, stopPreview]);
+  useEffect(() => () => stopPreview(), [stopPreview]);
+
   const save = () => {
     if (!titulo.trim()) { Alert.alert('Aviso', 'Informe um título.'); return; }
     if (!data)          { Alert.alert('Aviso', 'Informe a data.');    return; }
@@ -1588,8 +1640,8 @@ function EventModal({ visible, event, defaultDate, onSave, onDelete, onClose }) 
                       borderWidth:1.5, borderColor: alarmSound === s.id ? C.accent : C.border,
                       minHeight:48,
                     }}
-                    onPress={() => setAlarmSound(s.id)}
-                    {...a11y(s.name, s.description)}
+                    onPress={() => { setAlarmSound(s.id); playPreview(s.id); }}
+                    {...a11y(s.name, s.id === 'vibrate' ? 'Tocar vibração de teste' : `Ouvir prévia · ${s.description}`)}
                   >
                     <Icon name={s.icon} size={16} color={alarmSound === s.id ? C.accent : C.text3}/>
                     <View style={{ flex:1 }}>
