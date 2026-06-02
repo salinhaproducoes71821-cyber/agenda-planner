@@ -1290,7 +1290,7 @@ function AuthScreen() {
           {/* Brand */}
           <View style={{ alignItems:'center', marginBottom:40 }}>
             <Image
-              source={require('./LogoAmarelaTestes.png')}
+              source={require('./LogoNovaCorEnovosHighlightsNovo.png')}
               style={{ width:96, height:96, borderRadius:20, marginBottom:16 }}
               resizeMode="contain"
             />
@@ -3192,7 +3192,7 @@ function Root() {
   if (isLoading) return (
     <View style={{ flex:1, backgroundColor:C.bg, alignItems:'center', justifyContent:'center', gap:20 }}>
       <Image
-        source={require('./LogoAmarelaTestes.png')}
+        source={require('./LogoNovaCorEnovosHighlightsNovo.png')}
         style={{ width:100, height:100, borderRadius:20 }}
         resizeMode="contain"
       />
