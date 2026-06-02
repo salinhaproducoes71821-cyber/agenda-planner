@@ -1499,21 +1499,29 @@ function EventModal({ visible, event, defaultDate, onSave, onDelete, onClose }) 
   const previewRef         = useRef(null);
   const musicPausedByUsRef = useRef(false);
 
-  const stopPreview = useCallback(() => {
-    try { previewRef.current?.remove(); } catch (_) {}
+  // Para o áudio atual de fato: pause() ANTES de remove() — o remove() sozinho
+  // não interrompe a reprodução, o que fazia os sons se sobreporem.
+  const killAudio = useCallback(() => {
+    const p = previewRef.current;
     previewRef.current = null;
+    if (p) {
+      try { p.pause(); } catch (_) {}
+      try { p.remove(); } catch (_) {}
+    }
     try { Vibration.cancel(); } catch (_) {}
+  }, []);
+
+  const stopPreview = useCallback(() => {
+    killAudio();
     if (musicPausedByUsRef.current) {
       musicPausedByUsRef.current = false;
       try { resumeMusic(); } catch (_) {}
     }
-  }, [resumeMusic]);
+  }, [killAudio, resumeMusic]);
 
   const playPreview = useCallback((id) => {
-    // encerra o áudio anterior (mantém a lo-fi pausada entre trocas de opção)
-    try { previewRef.current?.remove(); } catch (_) {}
-    previewRef.current = null;
-    try { Vibration.cancel(); } catch (_) {}
+    // encerra o preview anterior (mantém a lo-fi pausada entre trocas de opção)
+    killAudio();
 
     if (id === 'vibrate') {
       Vibration.vibrate([0, 400, 200, 400]);
@@ -1532,7 +1540,7 @@ function EventModal({ visible, event, defaultDate, onSave, onDelete, onClose }) 
       p.play();
       previewRef.current = p;
     } catch (_) {}
-  }, [musicPlaying, pauseMusic]);
+  }, [killAudio, musicPlaying, pauseMusic]);
 
   // Para o preview ao fechar o modal, ao desligar o lembrete e ao desmontar
   useEffect(() => { if (!visible) stopPreview(); }, [visible, stopPreview]);
