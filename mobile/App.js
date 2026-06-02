@@ -379,12 +379,9 @@ async function scheduleEventNotification(event) {
     const now        = new Date();
     if (eventTime <= now) return; // evento já passou
 
-    // Lembrete 10 min antes. Se faltam menos de 10 min, avisa em 3s
-    // (em vez de descartar silenciosamente — isso fazia parecer quebrado).
-    let trigger = new Date(eventTime.getTime() - 10 * 60 * 1000);
-    if (trigger <= now) trigger = new Date(now.getTime() + 3000);
-    const leadMin = Math.max(0, Math.round((eventTime.getTime() - trigger.getTime()) / 60000));
-    const body    = leadMin >= 1 ? `Em ${leadMin} min • ${event.hora}` : `Agora • ${event.hora}`;
+    // Dispara o alarme no horário EXATO marcado no evento.
+    const trigger = eventTime;
+    const body    = `Agora • ${event.hora}`;
 
     const isVibrate = event.alarmSound === 'vibrate';
     const soundKey  = SOUND_FILES[event.alarmSound] ? event.alarmSound : DEFAULT_SOUND_KEY;
