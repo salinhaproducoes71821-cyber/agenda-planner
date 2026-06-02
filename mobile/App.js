@@ -2103,10 +2103,12 @@ function CronogramaScreen({ onMenu }) {
           ))}
 
           {/* Linha de hora atual — só no dia de hoje */}
+          {/* Trava no fim do dia: perto da meia-noite o ponto (10px) ultrapassava
+              o limite inferior da timeline (24*HOUR_H). */}
           {selDay === weekDays[0].ds && (
             <View style={{
               position:'absolute', left:0, right:0,
-              top: hojeHour * HOUR_H,
+              top: Math.min(hojeHour * HOUR_H, 24 * HOUR_H - 10),
               flexDirection:'row', alignItems:'center', zIndex:10,
             }}>
               <View style={{ width:10, height:10, borderRadius:5, backgroundColor:C.accent, marginLeft:-5 }}/>
