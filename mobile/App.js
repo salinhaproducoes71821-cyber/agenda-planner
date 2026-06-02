@@ -27,12 +27,15 @@ import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
+import NetInfo from '@react-native-community/netinfo';
 import api from './api-service';
 
 // Exibe notificações mesmo com o app em primeiro plano
+// SDK 54: shouldShowAlert foi descontinuado — usar shouldShowBanner + shouldShowList
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldShowAlert: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
     shouldPlaySound: true,
     shouldSetBadge: false,
   }),
@@ -463,6 +466,10 @@ const EventsContext = createContext(null);
 function EventsProvider({ children }) {
   const [events,    setEvents]    = useState([]);
   const [isOffline, setIsOffline] = useState(false);
+  const offlineRef = useRef(false);   // espelha isOffline p/ uso dentro de callbacks
+  const lastMesRef = useRef(undefined); // último mês carregado, p/ ressincronizar ao reconectar
+
+  const setOffline = (v) => { offlineRef.current = v; setIsOffline(v); };
 
   const applyEvents = (data, mes) => {
     if (mes) {
@@ -476,22 +483,42 @@ function EventsProvider({ children }) {
   };
 
   const load = useCallback(async (mes) => {
+    lastMesRef.current = mes;
     try {
       const data = await api.getEvents(mes);
-      setIsOffline(false);
+      setOffline(false);
       applyEvents(data, mes);
-      // Reagenda notificações para eventos futuros com lembrete ativo
-      data.filter(e => e.lembrete).forEach(ev => {
-        scheduleEventNotification(ev).catch(() => {});
-      });
+      // Reagenda notificações para eventos futuros com lembrete ativo.
+      // Sequencial (await) para evitar corrida no storage @ag_notif_ids,
+      // que causava IDs perdidos → notificações duplicadas.
+      (async () => {
+        for (const ev of data.filter(e => e.lembrete)) {
+          await scheduleEventNotification(ev).catch(() => {});
+        }
+      })();
       // Tenta sincronizar operações pendentes agora que estamos online
       api.flushQueue(() => load(mes)).catch(() => {});
     } catch (_) {
-      setIsOffline(true);
+      setOffline(true);
       const cached = await api.getCachedEvents(mes);
       if (cached?.length) applyEvents(cached, mes);
     }
   }, []);
+
+  // Detecção de conectividade ao vivo (event-driven, sem polling → amigável à bateria).
+  // Mostra o banner imediatamente ao perder conexão e ressincroniza ao reconectar.
+  useEffect(() => {
+    const unsub = NetInfo.addEventListener(state => {
+      const offline = !(state.isConnected && state.isInternetReachable !== false);
+      const wasOffline = offlineRef.current;
+      setOffline(offline);
+      if (wasOffline && !offline) {
+        // Reconectou: load() já dispara o flush da fila ao ter sucesso
+        load(lastMesRef.current).catch(() => {});
+      }
+    });
+    return () => unsub();
+  }, [load]);
 
   const addEvent = async (payload) => {
     const ev = await api.createEvent(payload);
@@ -1412,6 +1439,7 @@ function AuthScreen() {
 
 function EventModal({ visible, event, defaultDate, onSave, onDelete, onClose }) {
   const { C, T } = useTheme();
+  const insets = useSafeAreaInsets();
   const [titulo,     setTitulo]     = useState('');
   const [data,       setData]       = useState('');
   const [hora,       setHora]       = useState('09:00');
@@ -1548,7 +1576,7 @@ function EventModal({ visible, event, defaultDate, onSave, onDelete, onClose }) 
             )}
           </ScrollView>
 
-          <View style={{ flexDirection:'row', gap:10, padding:16, borderTopWidth:1, borderTopColor:C.border }}>
+          <View style={{ flexDirection:'row', gap:10, paddingHorizontal:16, paddingTop:16, paddingBottom: 16 + insets.bottom, borderTopWidth:1, borderTopColor:C.border }}>
             {event && (
               <Btn onPress={del} variant="danger" style={{ paddingHorizontal:16 }} label="Excluir evento" hint="Remove o evento permanentemente">
                 <Icon name="delete" size={16} color="#fff"/>
@@ -3024,11 +3052,11 @@ function AppShell() {
         <View style={{
           backgroundColor: C.warn + '22',
           borderBottomWidth: 1, borderBottomColor: C.warn + '55',
-          paddingHorizontal: 16, paddingVertical: 5,
+          paddingHorizontal: 16, paddingVertical: 6,
           flexDirection: 'row', alignItems: 'center', gap: 8,
         }}>
           <Icon name="bellOff" size={13} color={C.warn}/>
-          <Text style={[T.caption, { color: C.warn }]}>
+          <Text style={[T.caption, { color: C.warn, flex: 1, flexWrap: 'wrap' }]}>
             Sem conexão — exibindo dados em cache. Alterações serão sincronizadas.
           </Text>
         </View>

@@ -233,9 +233,27 @@ const api = {
     }
   },
 
-  // Humor
-  getMoods: (days = 14) => request('GET', `/api/moods?days=${days}`),
-  saveMood:  (nivel, data) => request('POST', '/api/moods', { nivel, data }),
+  // Humor — com cache e fila offline
+  getMoods: async (days = 14) => {
+    try {
+      const data = await request('GET', `/api/moods?days=${days}`);
+      await setCached('@ag_moods_cache', data);
+      return data;
+    } catch (e) {
+      if (isNetworkError(e)) return await getCached('@ag_moods_cache') || [];
+      throw e;
+    }
+  },
+  saveMood: async (nivel, data) => {
+    try { return await request('POST', '/api/moods', { nivel, data }); }
+    catch (e) {
+      if (isNetworkError(e)) {
+        await enqueueOp({ method: 'POST', path: '/api/moods', body: { nivel, data } });
+        return { nivel, data, _offline: true };
+      }
+      throw e;
+    }
+  },
 
   // Perfil
   updateProfile: (name) => request('PUT', '/api/users/profile', { name }),

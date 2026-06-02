@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Agenda Testes",
-    "slug": "agenda-testes",
+    "slug": "agenda-planner",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./LogoAmarelaTestes.png",
@@ -19,6 +19,7 @@
       "package": "com.agendaplanner.testes",
       "permissions": [
         "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.RECEIVE_BOOT_COMPLETED",
