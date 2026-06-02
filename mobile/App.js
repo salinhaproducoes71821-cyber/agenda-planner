@@ -1576,7 +1576,7 @@ function EventModal({ visible, event, defaultDate, onSave, onDelete, onClose }) 
 
             {/* Sons de alarme */}
             {lembrete && (
-              <View style={{ marginTop:4, marginBottom:8 }}>
+              <View style={{ marginTop:4, marginBottom:28 }}>
                 <Text style={[T.label, { color:C.text3, marginBottom:10 }]}>SOM DO ALARME</Text>
                 {ALARM_SOUNDS.map(s => (
                   <TouchableOpacity key={s.id}
@@ -1603,7 +1603,7 @@ function EventModal({ visible, event, defaultDate, onSave, onDelete, onClose }) 
             )}
           </ScrollView>
 
-          <View style={{ flexDirection:'row', gap:18, paddingHorizontal:16, paddingTop:16, paddingBottom: 16 + insets.bottom, borderTopWidth:1, borderTopColor:C.border }}>
+          <View style={{ flexDirection:'row', gap:10, paddingHorizontal:16, paddingTop:16, paddingBottom: 16 + insets.bottom, borderTopWidth:1, borderTopColor:C.border }}>
             {event && (
               <Btn onPress={del} variant="danger" style={{ paddingHorizontal:16 }} label="Excluir evento" hint="Remove o evento permanentemente">
                 <Icon name="delete" size={16} color="#fff"/>
