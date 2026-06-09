@@ -1,11 +1,10 @@
 # Dependências
 node_modules/
 
-# Variáveis de ambiente (NUNCA subir)
+# Variáveis de ambiente (NUNCA subir) — exceto o template .env.example
 .env
-.env.example
-.env.local
-.env.production
+.env.*
+!.env.example
 
 # Expo
 .expo/
@@ -34,3 +33,6 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Relatórios de segurança locais (gerados pelo /cso)
+.gstack/

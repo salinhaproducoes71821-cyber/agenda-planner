@@ -14,6 +14,12 @@
 
 'use strict';
 
+const crypto = require('crypto');
+
+// Refresh tokens são JWTs de alta entropia, então guardamos só o hash SHA-256
+// (sem necessidade de salt). Um vazamento do banco não expõe tokens utilizáveis.
+const hashToken = (t) => crypto.createHash('sha256').update(String(t)).digest('hex');
+
 const DB_TYPE = (process.env.DB_TYPE || 'mongo').toLowerCase();
 
 if (DB_TYPE === 'mysql') {
@@ -136,17 +142,17 @@ function createMongoAdapter() {
       return mapUser(doc);
     },
 
-    // ── Refresh tokens ────────────────────────────────────────────────────────
+    // ── Refresh tokens (guardados como hash SHA-256) ───────────────────────────
     saveRefreshToken: async (userId, token) => {
-      await RefreshToken.create({ userId, token });
+      await RefreshToken.create({ userId, token: hashToken(token) });
     },
 
     getRefreshToken: async (userId, token) => {
-      return RefreshToken.findOne({ userId, token }).lean();
+      return RefreshToken.findOne({ userId, token: hashToken(token) }).lean();
     },
 
     deleteRefreshToken: async (userId, token) => {
-      await RefreshToken.deleteOne({ userId, token });
+      await RefreshToken.deleteOne({ userId, token: hashToken(token) });
     },
 
     // ── Eventos ───────────────────────────────────────────────────────────────
@@ -401,17 +407,17 @@ function createMySQLAdapter() {
       return mapUser(row);
     },
 
-    // ── Refresh tokens ────────────────────────────────────────────────────────
+    // ── Refresh tokens (guardados como hash SHA-256) ───────────────────────────
     saveRefreshToken: async (userId, token) => {
-      await RefreshToken.create({ userId, token });
+      await RefreshToken.create({ userId, token: hashToken(token) });
     },
 
     getRefreshToken: async (userId, token) => {
-      return RefreshToken.findOne({ where: { userId, token }, raw: true });
+      return RefreshToken.findOne({ where: { userId, token: hashToken(token) }, raw: true });
     },
 
     deleteRefreshToken: async (userId, token) => {
-      await RefreshToken.destroy({ where: { userId, token } });
+      await RefreshToken.destroy({ where: { userId, token: hashToken(token) } });
     },
 
     // ── Eventos ───────────────────────────────────────────────────────────────

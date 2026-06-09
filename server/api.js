@@ -55,8 +55,50 @@ const PORT = process.env.PORT || 3000;
 
 // ─── Constantes JWT ──────────────────────────────────────────────────────────
 
-const JWT_SECRET         = process.env.JWT_SECRET         || 'TROQUE_EM_PRODUCAO';
-const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'TROQUE_REFRESH_EM_PRODUCAO';
+const crypto = require('crypto');
+
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+// Placeholders que JAMAIS podem virar segredo real (estão no código/.env.example,
+// portanto são públicos — assinar JWT com eles = forjar tokens de qualquer usuário).
+const PLACEHOLDER_SECRETS = new Set([
+  'TROQUE_EM_PRODUCAO',
+  'TROQUE_REFRESH_EM_PRODUCAO',
+  'TROQUE_POR_UMA_CHAVE_LONGA_E_ALEATORIA',
+  'TROQUE_POR_OUTRA_CHAVE_LONGA_E_ALEATORIA',
+]);
+
+/**
+ * Resolve um segredo JWT do ambiente.
+ *  • Produção: aborta o boot se ausente, placeholder ou curto (<32 chars).
+ *  • Dev/test: gera um segredo aleatório efêmero (por boot) e avisa — nunca
+ *    recai num valor previsível que permita forjar tokens.
+ */
+const resolveSecret = (name) => {
+  const val = process.env[name];
+  const weak = !val || PLACEHOLDER_SECRETS.has(val) || val.length < 32;
+  if (!weak) return val;
+  if (IS_PROD) {
+    console.error(
+      `[FATAL] ${name} ausente, placeholder ou curto demais (<32 chars). ` +
+      `Gere um forte: node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"`
+    );
+    process.exit(1);
+  }
+  console.warn(`[AVISO] ${name} fraco/ausente — usando segredo aleatório efêmero (tokens invalidam ao reiniciar).`);
+  return crypto.randomBytes(64).toString('hex');
+};
+
+const JWT_SECRET         = resolveSecret('JWT_SECRET');
+const JWT_REFRESH_SECRET = resolveSecret('JWT_REFRESH_SECRET');
+
+// Os dois segredos precisam ser distintos para que access e refresh não sejam
+// intercambiáveis caso o claim `type` algum dia seja removido.
+if (IS_PROD && JWT_SECRET === JWT_REFRESH_SECRET) {
+  console.error('[FATAL] JWT_SECRET e JWT_REFRESH_SECRET devem ser diferentes.');
+  process.exit(1);
+}
+
 const JWT_EXPIRES_IN     = process.env.JWT_EXPIRES_IN     || '15m';
 const JWT_REFRESH_EXP    = process.env.JWT_REFRESH_EXPIRES_IN || '7d';
 const BCRYPT_ROUNDS      = 12;
@@ -64,6 +106,11 @@ const BCRYPT_ROUNDS      = 12;
 // ═══════════════════════════════════════════════════════════════════════════
 // MIDDLEWARES GLOBAIS
 // ═══════════════════════════════════════════════════════════════════════════
+
+// Confia em exatamente 1 proxy (Railway/Heroku) para que req.ip e o rate-limit
+// vejam o IP real do cliente. NUNCA usar `true`: permitiria spoof de
+// X-Forwarded-For e bypass total do rate limiting.
+app.set('trust proxy', 1);
 
 // Cabeçalhos de segurança HTTP
 app.use(helmet());
@@ -73,13 +120,23 @@ if (process.env.NODE_ENV !== 'test') {
   app.use(morgan('combined'));
 }
 
-// CORS
-const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(',')
-  : '*';
+// CORS — allowlist explícita (nunca '*'). Sem ALLOWED_ORIGINS:
+//   • produção → CORS cross-origin desabilitado (apps nativos não mandam Origin
+//     e não são afetados; bloqueia páginas web maliciosas de origens arbitrárias)
+//   • dev      → libera localhost para o Expo web / dev tools
+const corsOrigin = (() => {
+  if (process.env.ALLOWED_ORIGINS) {
+    return process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()).filter(Boolean);
+  }
+  if (IS_PROD) {
+    console.warn('[AVISO] ALLOWED_ORIGINS não definido em produção — CORS cross-origin desabilitado.');
+    return false;
+  }
+  return [/^http:\/\/localhost:\d+$/, /^http:\/\/127\.0\.0\.1:\d+$/];
+})();
 
 app.use(cors({
-  origin:         allowedOrigins,
+  origin:         corsOrigin,
   methods:        ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
@@ -369,7 +426,14 @@ app.put('/api/users/profile',
 // PUT /api/users/avatar
 app.put('/api/users/avatar',
   authenticate,
-  [body('uri').trim().notEmpty().withMessage('URI da imagem inválida')],
+  [
+    body('uri')
+      .trim()
+      .notEmpty().withMessage('URI da imagem inválida')
+      .isLength({ max: 2048 }).withMessage('URI da imagem muito longa (máx. 2048).')
+      .not().matches(/^\s*(javascript|vbscript|data:text\/html)/i)
+      .withMessage('Esquema de URI não permitido.'),
+  ],
   validate,
   async (req, res) => {
     try {
@@ -487,7 +551,14 @@ app.delete('/api/events/:id',
 // ═══════════════════════════════════════════════════════════════════════════
 
 // GET /api/notes?q=termo&tag=pessoal
-app.get('/api/notes', authenticate, async (req, res) => {
+app.get('/api/notes',
+  authenticate,
+  [
+    query('q').optional().isString().withMessage('q inválido').trim().isLength({ max: 200 }),
+    query('tag').optional().isString().withMessage('tag inválida').trim().isLength({ max: 50 }),
+  ],
+  validate,
+  async (req, res) => {
   try {
     const notes = await db.getNotesByUser(req.userId, {
       q:   req.query.q,
