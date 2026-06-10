@@ -36,3 +36,6 @@ Thumbs.db
 
 # Relatórios de segurança locais (gerados pelo /cso)
 .gstack/
+
+# Instruções internas do Claude Code (não subir ao remoto)
+CLAUDE.md
