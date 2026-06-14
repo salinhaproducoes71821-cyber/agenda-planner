@@ -29,6 +29,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 import NetInfo from '@react-native-community/netinfo';
 import api from './api-service';
+import { supabase } from './supabase';
 
 // Exibe notificações mesmo com o app em primeiro plano
 // SDK 54: shouldShowAlert foi descontinuado — usar shouldShowBanner + shouldShowList
@@ -424,45 +425,77 @@ async function cancelEventNotification(eventId) {
 
 const AuthContext = createContext(null);
 
+// Traduz as mensagens de erro do Supabase para português.
+const mapAuthError = (error) => {
+  const m = (error?.message || '').toLowerCase();
+  if (m.includes('invalid login'))                          return 'E-mail ou senha incorretos.';
+  if (m.includes('already registered') || m.includes('user already')) return 'E-mail já cadastrado.';
+  if (m.includes('email not confirmed'))                    return 'Confirme seu e-mail antes de entrar.';
+  if (m.includes('password'))                               return 'Senha inválida (mínimo 6 caracteres).';
+  if (m.includes('rate limit') || m.includes('too many'))   return 'Muitas tentativas. Aguarde um pouco.';
+  return error?.message || 'Erro de autenticação.';
+};
+
 function AuthProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(null);
   const [isLoading,   setIsLoading]   = useState(true);
 
+  // Busca o perfil no backend (criado lá na 1ª chamada) e cacheia localmente.
+  const loadProfile = async () => {
+    const me = await api.getMe();
+    await AsyncStorage.setItem('@ag_user', JSON.stringify(me));
+    setCurrentUser(me);
+    return me;
+  };
+
   useEffect(() => {
     (async () => {
       try {
-        const token   = await AsyncStorage.getItem('@ag_token');
-        const userStr = await AsyncStorage.getItem('@ag_user');
-        if (token && userStr) setCurrentUser(JSON.parse(userStr));
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          // Mostra o perfil em cache na hora; atualiza do servidor em seguida.
+          const cached = await AsyncStorage.getItem('@ag_user');
+          if (cached) setCurrentUser(JSON.parse(cached));
+          try { await loadProfile(); } catch (_) {}
+        }
       } catch (e) {
         // sessão corrompida — não bloqueia
       } finally {
         setIsLoading(false);
       }
     })();
+
+    // Mantém o estado em sincronia se a sessão expirar/encerrar.
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT' || !session) setCurrentUser(null);
+    });
+    return () => sub?.subscription?.unsubscribe();
   }, []);
 
-  const saveSession = async (token, refresh, user) => {
-    await AsyncStorage.setItem('@ag_token',   token);
-    await AsyncStorage.setItem('@ag_refresh', refresh);
-    await AsyncStorage.setItem('@ag_user',    JSON.stringify(user));
-    setCurrentUser(user);
-  };
-
   const login = async (email, password) => {
-    const d = await api.login(email, password);
-    await saveSession(d.accessToken, d.refreshToken, d.user);
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw new Error(mapAuthError(error));
+    await loadProfile();
   };
 
   const register = async (name, email, pwd, confirmPwd) => {
-    const d = await api.register(name, email, pwd, confirmPwd);
-    await saveSession(d.accessToken, d.refreshToken, d.user);
+    if (pwd !== confirmPwd) throw new Error('As senhas não coincidem');
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password: pwd,
+      options: { data: { name } },   // vira user_metadata.name no token
+    });
+    if (error) throw new Error(mapAuthError(error));
+    if (!data.session) {
+      // Confirmação de e-mail ligada: ainda não há sessão.
+      throw new Error('Conta criada! Confirme seu e-mail para entrar.');
+    }
+    await loadProfile();
   };
 
   const logout = async () => {
-    const refresh = await AsyncStorage.getItem('@ag_refresh');
-    try { await api.logout(refresh); } catch (_) {}
-    await AsyncStorage.multiRemove(['@ag_token', '@ag_refresh', '@ag_user']);
+    try { await supabase.auth.signOut(); } catch (_) {}
+    await AsyncStorage.removeItem('@ag_user');
     setCurrentUser(null);
   };
 

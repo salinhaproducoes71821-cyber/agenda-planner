@@ -1,18 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supabase } from './supabase';
 
 const API_BASE = 'https://agenda-planner-production.up.railway.app';
 
-const getToken   = () => AsyncStorage.getItem('@ag_token');
-const getRefresh = () => AsyncStorage.getItem('@ag_refresh');
-
-const saveTokens = (access, refresh) =>
-  Promise.all([
-    AsyncStorage.setItem('@ag_token',   access),
-    AsyncStorage.setItem('@ag_refresh', refresh),
-  ]);
-
-const clearTokens = () =>
-  AsyncStorage.multiRemove(['@ag_token', '@ag_refresh', '@ag_user']);
+// O access token vem da sessão do Supabase (renovada automaticamente pelo SDK).
+const getAccessToken = async () => {
+  const { data } = await supabase.auth.getSession();
+  return data?.session?.access_token || null;
+};
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────
 const getCached = async (key) => {
@@ -60,7 +55,7 @@ function isNetworkError(e) {
 async function request(method, path, body, auth = true) {
   const headers = { 'Content-Type': 'application/json' };
   if (auth) {
-    const token = await getToken();
+    const token = await getAccessToken();
     if (token) headers['Authorization'] = `Bearer ${token}`;
   }
   const opts = { method, headers };
@@ -70,22 +65,16 @@ async function request(method, path, body, auth = true) {
 
   if (res.status === 401 && auth) {
     try {
-      const refreshToken = await getRefresh();
-      if (!refreshToken) throw new Error('sem refresh');
-      const rRes = await fetch(`${API_BASE}/api/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken }),
-      });
-      if (!rRes.ok) throw new Error('refresh falhou');
-      const { accessToken, refreshToken: newRefresh } = await rRes.json();
-      await saveTokens(accessToken, newRefresh);
+      // Força a renovação da sessão pelo Supabase e repete a requisição.
+      const { data, error } = await supabase.auth.refreshSession();
+      const token = data?.session?.access_token;
+      if (error || !token) throw new Error('refresh falhou');
       res = await fetch(`${API_BASE}${path}`, {
         ...opts,
-        headers: { ...headers, Authorization: `Bearer ${accessToken}` },
+        headers: { ...headers, Authorization: `Bearer ${token}` },
       });
     } catch {
-      await clearTokens();
+      await supabase.auth.signOut();
       throw new Error('Sessão expirada. Faça login novamente.');
     }
   }
@@ -119,13 +108,8 @@ async function flushQueue(onFlushed) {
 
 // ── API ───────────────────────────────────────────────────────────────────────
 const api = {
-  // Auth
-  login:    (email, password) =>
-    request('POST', '/api/auth/login', { email, password }, false),
-  register: (name, email, password, confirmPassword) =>
-    request('POST', '/api/auth/register', { name, email, password, confirmPassword }, false),
-  logout: (refreshToken) =>
-    request('POST', '/api/auth/logout', { refreshToken }),
+  // Perfil do usuário autenticado (cria no backend na 1ª chamada)
+  getMe: () => request('GET', '/api/users/me'),
 
   // Eventos — com cache e fila offline
   getEvents: async (mes) => {
@@ -260,8 +244,6 @@ const api = {
   updateAvatar:  (uri)  => request('PUT', '/api/users/avatar',  { uri }),
 
   // Helpers
-  saveTokens,
-  clearTokens,
   flushQueue,
   getQueue,
 };

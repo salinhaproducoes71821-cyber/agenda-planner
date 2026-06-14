@@ -14,11 +14,9 @@
 
 'use strict';
 
-const crypto = require('crypto');
-
-// Refresh tokens são JWTs de alta entropia, então guardamos só o hash SHA-256
-// (sem necessidade de salt). Um vazamento do banco não expõe tokens utilizáveis.
-const hashToken = (t) => crypto.createHash('sha256').update(String(t)).digest('hex');
+// A autenticação (login/cadastro/sessão) é feita pelo Supabase. Esta camada
+// guarda apenas os DADOS do app (eventos/notas/humor) e um PERFIL leve por
+// usuário (nome/avatar), sempre chaveado pelo UID do Supabase.
 
 const DB_TYPE = (process.env.DB_TYPE || 'mongo').toLowerCase();
 
@@ -42,19 +40,14 @@ function createMongoAdapter() {
 
   // ─── Schemas ──────────────────────────────────────────────────────────────
 
-  const UserSchema = new Schema({
-    _id:          { type: String, default: () => new Types.ObjectId().toString() },
-    name:         { type: String, required: true, trim: true, maxlength: 80 },
-    email:        { type: String, required: true, unique: true, lowercase: true, trim: true },
-    passwordHash: { type: String, required: true },
-    avatar:       { type: String, default: null },
-  }, { timestamps: true });
-
-  const RefreshTokenSchema = new Schema({
-    userId:    { type: String, required: true, index: true },
-    token:     { type: String, required: true, unique: true },
-    createdAt: { type: Date,   default: Date.now, expires: '7d' }, // TTL automático
-  });
+  // Perfil leve. O _id é o UID do usuário no Supabase (string UUID).
+  // Não há senha aqui — a autenticação é responsabilidade do Supabase.
+  const ProfileSchema = new Schema({
+    _id:    { type: String },
+    name:   { type: String, default: '', trim: true, maxlength: 80 },
+    email:  { type: String, default: '', lowercase: true, trim: true },
+    avatar: { type: String, default: null },
+  }, { timestamps: true, _id: false });
 
   const EventSchema = new Schema({
     _id:        { type: String, default: () => new Types.ObjectId().toString() },
@@ -91,15 +84,14 @@ function createMongoAdapter() {
 
   // ─── Models (lazy — criados apenas uma vez) ───────────────────────────────
 
-  const User         = mongoose.models.User         || model('User',         UserSchema);
-  const RefreshToken = mongoose.models.RefreshToken || model('RefreshToken', RefreshTokenSchema);
-  const Event        = mongoose.models.Event        || model('Event',        EventSchema);
-  const Note         = mongoose.models.Note         || model('Note',         NoteSchema);
-  const Mood         = mongoose.models.Mood         || model('Mood',         MoodSchema);
+  const Profile = mongoose.models.Profile || model('Profile', ProfileSchema);
+  const Event   = mongoose.models.Event   || model('Event',   EventSchema);
+  const Note    = mongoose.models.Note    || model('Note',    NoteSchema);
+  const Mood    = mongoose.models.Mood    || model('Mood',    MoodSchema);
 
   // ─── Mapeador: documento Mongoose → objeto plano ─────────────────────────
 
-  const mapUser  = (d) => d ? ({ id: d._id, name: d.name, email: d.email, avatar: d.avatar, passwordHash: d.passwordHash }) : null;
+  const mapProfile = (d) => d ? ({ id: d._id, name: d.name, email: d.email, avatar: d.avatar || null }) : null;
   const mapEvent = (d) => d ? ({ id: d._id, userId: d.userId, titulo: d.titulo, data: d.data, hora: d.hora, cor: d.cor, lembrete: d.lembrete, alarmSound: d.alarmSound, descricao: d.descricao }) : null;
   const mapNote  = (d) => d ? ({ id: d._id, userId: d.userId, titulo: d.titulo, conteudo: d.conteudo, tags: d.tags, updatedAt: d.updatedAt }) : null;
   const mapMood  = (d) => d ? ({ id: d._id?.toString(), userId: d.userId, data: d.data, nivel: d.nivel }) : null;
@@ -121,38 +113,26 @@ function createMongoAdapter() {
       await mongoose.connection.close();
     },
 
-    // ── Usuários ──────────────────────────────────────────────────────────────
-    getUserByEmail: async (email) => {
-      const doc = await User.findOne({ email: email.toLowerCase() }).lean();
-      return mapUser(doc);
+    // ── Perfil ────────────────────────────────────────────────────────────────
+    // Cria o perfil na primeira vez que o usuário (já autenticado no Supabase)
+    // bate no backend; nas próximas, só retorna o existente.
+    getOrCreateProfile: async (uid, { email, name } = {}) => {
+      const doc = await Profile.findByIdAndUpdate(
+        uid,
+        { $setOnInsert: { name: name || '', email: email || '' } },
+        { new: true, upsert: true, setDefaultsOnInsert: true }
+      ).lean();
+      return mapProfile(doc);
     },
 
-    getUserById: async (id) => {
-      const doc = await User.findById(id).lean();
-      return mapUser(doc);
+    getProfileById: async (uid) => {
+      const doc = await Profile.findById(uid).lean();
+      return mapProfile(doc);
     },
 
-    createUser: async ({ id, name, email, passwordHash }) => {
-      const doc = await User.create({ _id: id, name, email, passwordHash });
-      return mapUser(doc);
-    },
-
-    updateUser: async (id, fields) => {
-      const doc = await User.findByIdAndUpdate(id, { $set: fields }, { new: true }).lean();
-      return mapUser(doc);
-    },
-
-    // ── Refresh tokens (guardados como hash SHA-256) ───────────────────────────
-    saveRefreshToken: async (userId, token) => {
-      await RefreshToken.create({ userId, token: hashToken(token) });
-    },
-
-    getRefreshToken: async (userId, token) => {
-      return RefreshToken.findOne({ userId, token: hashToken(token) }).lean();
-    },
-
-    deleteRefreshToken: async (userId, token) => {
-      await RefreshToken.deleteOne({ userId, token: hashToken(token) });
+    updateProfile: async (uid, fields) => {
+      const doc = await Profile.findByIdAndUpdate(uid, { $set: fields }, { new: true, upsert: true }).lean();
+      return mapProfile(doc);
     },
 
     // ── Eventos ───────────────────────────────────────────────────────────────
@@ -292,19 +272,13 @@ function createMySQLAdapter() {
 
   // ─── Models ───────────────────────────────────────────────────────────────
 
-  const User = sequelize.define('User', {
-    id:           { type: DataTypes.STRING(36),  primaryKey: true },
-    name:         { type: DataTypes.STRING(80),  allowNull: false },
-    email:        { type: DataTypes.STRING(255), allowNull: false, unique: true },
-    passwordHash: { type: DataTypes.STRING(255), allowNull: false, field: 'password_hash' },
-    avatar:       { type: DataTypes.TEXT,        allowNull: true, defaultValue: null },
-  }, { tableName: 'users', timestamps: true, underscored: true });
-
-  const RefreshToken = sequelize.define('RefreshToken', {
-    id:     { type: DataTypes.INTEGER,     primaryKey: true, autoIncrement: true },
-    userId: { type: DataTypes.STRING(36),  allowNull: false, field: 'user_id' },
-    token:  { type: DataTypes.TEXT,        allowNull: false, unique: true },
-  }, { tableName: 'refresh_tokens', timestamps: true, updatedAt: false, underscored: true });
+  // Perfil leve — o id é o UID do usuário no Supabase. Sem senha (auth = Supabase).
+  const Profile = sequelize.define('Profile', {
+    id:     { type: DataTypes.STRING(64),  primaryKey: true },
+    name:   { type: DataTypes.STRING(80),  allowNull: false, defaultValue: '' },
+    email:  { type: DataTypes.STRING(255), allowNull: false, defaultValue: '' },
+    avatar: { type: DataTypes.TEXT,        allowNull: true,  defaultValue: null },
+  }, { tableName: 'profiles', timestamps: true, underscored: true });
 
   const Event = sequelize.define('Event', {
     id:         { type: DataTypes.STRING(36),  primaryKey: true },
@@ -346,8 +320,8 @@ function createMySQLAdapter() {
 
   // ─── Mapeadores ───────────────────────────────────────────────────────────
 
-  const mapUser = (r) => r ? ({
-    id: r.id, name: r.name, email: r.email, avatar: r.avatar || null, passwordHash: r.passwordHash,
+  const mapProfile = (r) => r ? ({
+    id: r.id, name: r.name, email: r.email, avatar: r.avatar || null,
   }) : null;
 
   const mapEvent = (r) => r ? ({
@@ -385,39 +359,24 @@ function createMySQLAdapter() {
       await sequelize.close();
     },
 
-    // ── Usuários ──────────────────────────────────────────────────────────────
-    getUserByEmail: async (email) => {
-      const row = await User.findOne({ where: { email: email.toLowerCase() }, raw: true });
-      return mapUser(row);
+    // ── Perfil ────────────────────────────────────────────────────────────────
+    getOrCreateProfile: async (uid, { email, name } = {}) => {
+      const [row] = await Profile.findOrCreate({
+        where:    { id: uid },
+        defaults: { id: uid, name: name || '', email: email || '' },
+      });
+      return mapProfile(row.get({ plain: true }));
     },
 
-    getUserById: async (id) => {
-      const row = await User.findByPk(id, { raw: true });
-      return mapUser(row);
+    getProfileById: async (uid) => {
+      const row = await Profile.findByPk(uid, { raw: true });
+      return mapProfile(row);
     },
 
-    createUser: async ({ id, name, email, passwordHash }) => {
-      const row = await User.create({ id, name, email, passwordHash });
-      return mapUser(row.get({ plain: true }));
-    },
-
-    updateUser: async (id, fields) => {
-      await User.update(fields, { where: { id } });
-      const row = await User.findByPk(id, { raw: true });
-      return mapUser(row);
-    },
-
-    // ── Refresh tokens (guardados como hash SHA-256) ───────────────────────────
-    saveRefreshToken: async (userId, token) => {
-      await RefreshToken.create({ userId, token: hashToken(token) });
-    },
-
-    getRefreshToken: async (userId, token) => {
-      return RefreshToken.findOne({ where: { userId, token: hashToken(token) }, raw: true });
-    },
-
-    deleteRefreshToken: async (userId, token) => {
-      await RefreshToken.destroy({ where: { userId, token: hashToken(token) } });
+    updateProfile: async (uid, fields) => {
+      await Profile.upsert({ id: uid, ...fields });
+      const row = await Profile.findByPk(uid, { raw: true });
+      return mapProfile(row);
     },
 
     // ── Eventos ───────────────────────────────────────────────────────────────
