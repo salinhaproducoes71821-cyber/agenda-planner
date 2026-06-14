@@ -571,6 +571,19 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', db: process.env.DB_TYPE || 'mongo', timestamp: new Date().toISOString() });
 });
 
+// Diagnóstico temporário: confirma QUAL código serve a URL pública e o que ele
+// enxerga da config de auth. Sem segredos. Remover após resolver o 401.
+app.get('/api/__authdiag', (req, res) => {
+  res.json({
+    build: 'es256-diag-1',
+    hasHs256: HAS_HS256,
+    hasJwks: HAS_JWKS,
+    jwksUrl: JWKS_URL,
+    node: process.version,
+    fetch: typeof fetch,
+  });
+});
+
 // ─── 404 ─────────────────────────────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({ error: 'Rota não encontrada.' });
