@@ -82,6 +82,14 @@ if (!HAS_HS256 && !HAS_JWKS) {
   console.warn(`[AVISO] ${msg}`);
 }
 
+// Log de diagnóstico (apenas valores públicos). JSON.stringify revela aspas/
+// espaços acidentais na variável (ex.: "https://...co " com espaço no fim).
+console.log(
+  `[auth-config] HAS_HS256=${HAS_HS256} HAS_JWKS=${HAS_JWKS} ` +
+  `SUPABASE_URL=${JSON.stringify(process.env.SUPABASE_URL || null)} ` +
+  `JWKS_URL=${JSON.stringify(JWKS_URL)}`
+);
+
 // Cache simples do JWKS (chaves públicas do Supabase). Recarrega quando expira
 // o TTL ou quando aparece um `kid` desconhecido (rotação de chave).
 let _jwksCache = { keys: [], fetchedAt: 0 };
@@ -218,6 +226,14 @@ const authenticate = async (req, res, next) => {
     req.userName  = payload.user_metadata?.name || '';
     next();
   } catch (err) {
+    // Log de diagnóstico (server-side apenas — não vaza detalhes ao cliente).
+    let hdr = {};
+    try { hdr = jwt.decode(token, { complete: true })?.header || {}; } catch {}
+    console.warn(
+      `[auth] falha na validação: ${err.name || 'Error'}: ${err.message} ` +
+      `| alg=${hdr.alg || '?'} kid=${hdr.kid || '-'} ` +
+      `| HAS_HS256=${HAS_HS256} HAS_JWKS=${HAS_JWKS}`
+    );
     const msg = err.name === 'TokenExpiredError'
       ? 'Token expirado. Faça login novamente.'
       : 'Token inválido.';
