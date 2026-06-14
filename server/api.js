@@ -3,7 +3,7 @@
 // Node.js + Express — REST API completa
 //
 // DEPENDÊNCIAS:
-//   npm install express cors helmet express-rate-limit bcryptjs jsonwebtoken
+//   npm install express cors helmet express-rate-limit jsonwebtoken
 //   npm install express-validator dotenv morgan uuid
 //   npm install mongoose          (para MongoDB)
 //   npm install mysql2 sequelize  (para MySQL)
@@ -23,11 +23,9 @@
 //   MYSQL_PASSWORD=senha
 //   MYSQL_DATABASE=agenda
 //
-//   # JWT
-//   JWT_SECRET=sua_chave_secreta_longa
-//   JWT_REFRESH_SECRET=outra_chave_secreta
-//   JWT_EXPIRES_IN=15m
-//   JWT_REFRESH_EXPIRES_IN=7d
+//   # Supabase (autenticação) — defina ao menos um:
+//   SUPABASE_JWT_SECRET=...   # HS256 legacy — Settings → API → JWT Settings
+//   SUPABASE_URL=https://<projeto>.supabase.co  # RS256/ES256 via JWKS
 //
 //   # CORS
 //   ALLOWED_ORIGINS=http://localhost:8081,https://seudominio.com
@@ -37,11 +35,11 @@
 
 require('dotenv').config();
 
+const crypto    = require('crypto');
 const express   = require('express');
 const cors      = require('cors');
 const helmet    = require('helmet');
 const rateLimit = require('express-rate-limit');
-const bcrypt    = require('bcryptjs');
 const jwt       = require('jsonwebtoken');
 const morgan    = require('morgan');
 const { v4: uuidv4 } = require('uuid');
@@ -53,55 +51,56 @@ const db = require('./database');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
-// ─── Constantes JWT ──────────────────────────────────────────────────────────
-
-const crypto = require('crypto');
+// ─── Autenticação via Supabase ───────────────────────────────────────────────
+// O backend NÃO emite mais tokens: ele apenas VALIDA o access token do Supabase.
+// Login/cadastro/refresh são responsabilidade do Supabase, no app cliente.
+//
+// O Supabase pode assinar o access token de duas formas:
+//   • HS256 (legacy "JWT Secret", simétrico)  → valida com SUPABASE_JWT_SECRET
+//   • RS256/ES256 (signing keys, assimétrico)  → valida com a chave pública do
+//     JWKS do projeto (SUPABASE_URL/auth/v1/.well-known/jwks.json)
+// A escolha é automática pelo header `alg` do token, então funciona nos dois
+// casos sem reconfiguração.
 
 const IS_PROD = process.env.NODE_ENV === 'production';
 
-// Placeholders que JAMAIS podem virar segredo real (estão no código/.env.example,
-// portanto são públicos — assinar JWT com eles = forjar tokens de qualquer usuário).
-const PLACEHOLDER_SECRETS = new Set([
-  'TROQUE_EM_PRODUCAO',
-  'TROQUE_REFRESH_EM_PRODUCAO',
-  'TROQUE_POR_UMA_CHAVE_LONGA_E_ALEATORIA',
-  'TROQUE_POR_OUTRA_CHAVE_LONGA_E_ALEATORIA',
-]);
+const SUPABASE_JWT_SECRET = process.env.SUPABASE_JWT_SECRET || '';
+const SUPABASE_URL        = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
+const JWKS_URL = SUPABASE_URL ? `${SUPABASE_URL}/auth/v1/.well-known/jwks.json` : '';
 
-/**
- * Resolve um segredo JWT do ambiente.
- *  • Produção: aborta o boot se ausente, placeholder ou curto (<32 chars).
- *  • Dev/test: gera um segredo aleatório efêmero (por boot) e avisa — nunca
- *    recai num valor previsível que permita forjar tokens.
- */
-const resolveSecret = (name) => {
-  const val = process.env[name];
-  const weak = !val || PLACEHOLDER_SECRETS.has(val) || val.length < 32;
-  if (!weak) return val;
-  if (IS_PROD) {
-    console.error(
-      `[FATAL] ${name} ausente, placeholder ou curto demais (<32 chars). ` +
-      `Gere um forte: node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"`
-    );
-    process.exit(1);
-  }
-  console.warn(`[AVISO] ${name} fraco/ausente — usando segredo aleatório efêmero (tokens invalidam ao reiniciar).`);
-  return crypto.randomBytes(64).toString('hex');
-};
+const HAS_HS256 = SUPABASE_JWT_SECRET.length >= 20; // valida tokens HS256 legacy
+const HAS_JWKS  = JWKS_URL.length > 0;              // valida tokens assimétricos
 
-const JWT_SECRET         = resolveSecret('JWT_SECRET');
-const JWT_REFRESH_SECRET = resolveSecret('JWT_REFRESH_SECRET');
-
-// Os dois segredos precisam ser distintos para que access e refresh não sejam
-// intercambiáveis caso o claim `type` algum dia seja removido.
-if (IS_PROD && JWT_SECRET === JWT_REFRESH_SECRET) {
-  console.error('[FATAL] JWT_SECRET e JWT_REFRESH_SECRET devem ser diferentes.');
-  process.exit(1);
+// Precisa de pelo menos uma forma de validar o token. Sem nenhuma, toda
+// requisição autenticada seria rejeitada — em produção isso é erro fatal.
+if (!HAS_HS256 && !HAS_JWKS) {
+  const msg =
+    'Nenhum método de validação de token configurado. Defina SUPABASE_JWT_SECRET ' +
+    '(Settings → API → JWT Settings → JWT Secret) e/ou SUPABASE_URL (para validar ' +
+    'tokens assinados por chave assimétrica via JWKS).';
+  if (IS_PROD) { console.error(`[FATAL] ${msg}`); process.exit(1); }
+  console.warn(`[AVISO] ${msg}`);
 }
 
-const JWT_EXPIRES_IN     = process.env.JWT_EXPIRES_IN     || '15m';
-const JWT_REFRESH_EXP    = process.env.JWT_REFRESH_EXPIRES_IN || '7d';
-const BCRYPT_ROUNDS      = 12;
+// Cache simples do JWKS (chaves públicas do Supabase). Recarrega quando expira
+// o TTL ou quando aparece um `kid` desconhecido (rotação de chave).
+let _jwksCache = { keys: [], fetchedAt: 0 };
+const JWKS_TTL_MS = 10 * 60 * 1000;
+
+async function getSupabasePublicKey(kid) {
+  if (!JWKS_URL) throw new Error('SUPABASE_URL não configurado para validação assimétrica.');
+  const fresh = Date.now() - _jwksCache.fetchedAt < JWKS_TTL_MS;
+  let jwk = fresh ? _jwksCache.keys.find(k => k.kid === kid) : null;
+  if (!jwk) {
+    const res = await fetch(JWKS_URL);
+    if (!res.ok) throw new Error(`Falha ao buscar JWKS (${res.status}).`);
+    const data = await res.json();
+    _jwksCache = { keys: Array.isArray(data.keys) ? data.keys : [], fetchedAt: Date.now() };
+    jwk = _jwksCache.keys.find(k => k.kid === kid);
+  }
+  if (!jwk) throw new Error('Chave de assinatura não encontrada no JWKS.');
+  return crypto.createPublicKey({ key: jwk, format: 'jwk' });
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // MIDDLEWARES GLOBAIS
@@ -158,15 +157,7 @@ const generalLimiter = rateLimit({
   message: { error: 'Muitas requisições. Tente novamente em breve.' },
 });
 
-// Auth: 10 req / 15 min (proteção contra brute-force)
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: { error: 'Muitas tentativas. Aguarde 15 minutos.' },
-});
-
-app.use('/api/',      generalLimiter);
-app.use('/api/auth/', authLimiter);
+app.use('/api/', generalLimiter);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // UTILITÁRIOS
@@ -178,23 +169,6 @@ app.use('/api/auth/', authLimiter);
 const sanitize = (str) => {
   if (typeof str !== 'string') return '';
   return str.replace(/[<>"'`]/g, '').trim();
-};
-
-/**
- * Gera par de tokens JWT (access + refresh)
- */
-const generateTokens = (userId) => {
-  const accessToken  = jwt.sign(
-    { sub: String(userId), type: 'access'  },
-    JWT_SECRET,
-    { expiresIn: JWT_EXPIRES_IN }
-  );
-  const refreshToken = jwt.sign(
-    { sub: String(userId), type: 'refresh' },
-    JWT_REFRESH_SECRET,
-    { expiresIn: JWT_REFRESH_EXP }
-  );
-  return { accessToken, refreshToken };
 };
 
 /**
@@ -214,15 +188,34 @@ const validate = (req, res, next) => {
 // MIDDLEWARE DE AUTENTICAÇÃO
 // ═══════════════════════════════════════════════════════════════════════════
 
-const authenticate = (req, res, next) => {
+const authenticate = async (req, res, next) => {
   const auth = req.headers['authorization'];
   if (!auth || !auth.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Token de autenticação ausente.' });
   }
+  const token = auth.slice(7);
   try {
-    const payload = jwt.verify(auth.slice(7), JWT_SECRET);
-    if (payload.type !== 'access') throw new Error('Tipo de token inválido');
-    req.userId = payload.sub;
+    const decoded = jwt.decode(token, { complete: true });
+    const alg = decoded?.header?.alg;
+    if (!alg) throw new Error('Token malformado.');
+
+    const opts = { audience: 'authenticated' };
+    let payload;
+    if (alg === 'HS256') {
+      // Token assinado com o legacy JWT Secret (simétrico).
+      if (!HAS_HS256) throw new Error('Token HS256 recebido, mas SUPABASE_JWT_SECRET não está configurado.');
+      payload = jwt.verify(token, SUPABASE_JWT_SECRET, { ...opts, algorithms: ['HS256'] });
+    } else if (alg === 'RS256' || alg === 'ES256') {
+      // Token assinado com signing key assimétrica — valida via JWKS.
+      const key = await getSupabasePublicKey(decoded.header.kid);
+      payload = jwt.verify(token, key, { ...opts, algorithms: [alg] });
+    } else {
+      throw new Error(`Algoritmo de assinatura não suportado: ${alg}`);
+    }
+
+    req.userId    = payload.sub;                     // UID do Supabase (UUID)
+    req.userEmail = payload.email || '';
+    req.userName  = payload.user_metadata?.name || '';
     next();
   } catch (err) {
     const msg = err.name === 'TokenExpiredError'
@@ -235,15 +228,6 @@ const authenticate = (req, res, next) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // VALIDADORES REUTILIZÁVEIS
 // ═══════════════════════════════════════════════════════════════════════════
-
-const passwordRules = [
-  body('password')
-    .isLength({ min: 8 }).withMessage('Senha: mínimo 8 caracteres')
-    .matches(/[A-Z]/).withMessage('Senha: ao menos uma letra maiúscula')
-    .matches(/[a-z]/).withMessage('Senha: ao menos uma letra minúscula')
-    .matches(/\d/).withMessage('Senha: ao menos um número')
-    .matches(/[!@#$%^&*()\-_=+[\]{};':"\\|,.<>/?]/).withMessage('Senha: ao menos um caractere especial'),
-];
 
 const eventValidators = [
   body('titulo')
@@ -269,141 +253,22 @@ const eventValidators = [
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ROTAS — AUTENTICAÇÃO
+// ROTAS — USUÁRIO / PERFIL
+//
+// A autenticação (login/cadastro/sessão) é feita pelo Supabase no app cliente.
+// Aqui só mantemos um perfil leve (nome/avatar) chaveado pelo UID do Supabase.
 // ═══════════════════════════════════════════════════════════════════════════
 
-// POST /api/auth/register
-app.post('/api/auth/register',
-  [
-    body('name').trim().isLength({ min: 2, max: 80 }).withMessage('Nome: 2–80 caracteres'),
-    body('email').trim().toLowerCase().isEmail().withMessage('E-mail inválido').normalizeEmail(),
-    ...passwordRules,
-    body('confirmPassword')
-      .custom((val, { req }) => val === req.body.password)
-      .withMessage('As senhas não coincidem'),
-  ],
-  validate,
-  async (req, res) => {
-    try {
-      const { name, email, password } = req.body;
-
-      const existing = await db.getUserByEmail(email);
-      if (existing) {
-        return res.status(409).json({ error: 'E-mail já cadastrado.' });
-      }
-
-      const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-      const user = await db.createUser({
-        id:   uuidv4(),
-        name: sanitize(name),
-        email,
-        passwordHash,
-      });
-
-      const { accessToken, refreshToken } = generateTokens(user.id);
-      await db.saveRefreshToken(user.id, refreshToken);
-
-      return res.status(201).json({
-        accessToken,
-        refreshToken,
-        user: { id: user.id, name: user.name, email: user.email, avatar: user.avatar || null },
-      });
-    } catch (err) {
-      console.error('[POST /register]', err);
-      return res.status(500).json({ error: 'Erro ao criar conta.' });
-    }
-  }
-);
-
-// POST /api/auth/login
-app.post('/api/auth/login',
-  [
-    body('email').trim().toLowerCase().isEmail().withMessage('E-mail inválido').normalizeEmail(),
-    body('password').notEmpty().withMessage('Informe a senha'),
-  ],
-  validate,
-  async (req, res) => {
-    try {
-      const { email, password } = req.body;
-
-      const user = await db.getUserByEmail(email);
-      if (!user) {
-        // Hash dummy para tempo constante (evita user enumeration)
-        await bcrypt.hash('dummy_timing_protection', BCRYPT_ROUNDS);
-        return res.status(401).json({ error: 'E-mail ou senha incorretos.' });
-      }
-
-      const valid = await bcrypt.compare(password, user.passwordHash);
-      if (!valid) {
-        return res.status(401).json({ error: 'E-mail ou senha incorretos.' });
-      }
-
-      const { accessToken, refreshToken } = generateTokens(user.id);
-      await db.saveRefreshToken(user.id, refreshToken);
-
-      return res.json({
-        accessToken,
-        refreshToken,
-        user: { id: user.id, name: user.name, email: user.email, avatar: user.avatar || null },
-      });
-    } catch (err) {
-      console.error('[POST /login]', err);
-      return res.status(500).json({ error: 'Erro ao autenticar.' });
-    }
-  }
-);
-
-// POST /api/auth/refresh — Rotação de refresh token
-app.post('/api/auth/refresh',
-  [body('refreshToken').notEmpty().withMessage('refreshToken obrigatório')],
-  validate,
-  async (req, res) => {
-    const { refreshToken } = req.body;
-    try {
-      const payload = jwt.verify(refreshToken, JWT_REFRESH_SECRET);
-      if (payload.type !== 'refresh') throw new Error('Tipo inválido');
-
-      const stored = await db.getRefreshToken(payload.sub, refreshToken);
-      if (!stored) {
-        return res.status(401).json({ error: 'Token revogado ou inválido.' });
-      }
-
-      // Rotação: invalida o token usado, emite um novo par
-      await db.deleteRefreshToken(payload.sub, refreshToken);
-      const { accessToken, refreshToken: newRefresh } = generateTokens(payload.sub);
-      await db.saveRefreshToken(payload.sub, newRefresh);
-
-      return res.json({ accessToken, refreshToken: newRefresh });
-    } catch (err) {
-      return res.status(401).json({ error: 'Token de atualização inválido ou expirado.' });
-    }
-  }
-);
-
-// POST /api/auth/logout
-app.post('/api/auth/logout', authenticate, async (req, res) => {
-  try {
-    const { refreshToken } = req.body;
-    if (refreshToken) {
-      await db.deleteRefreshToken(req.userId, refreshToken);
-    }
-    return res.json({ message: 'Sessão encerrada.' });
-  } catch (err) {
-    return res.status(500).json({ error: 'Erro ao encerrar sessão.' });
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// ROTAS — USUÁRIO
-// ═══════════════════════════════════════════════════════════════════════════
-
-// GET /api/users/me
+// GET /api/users/me — cria o perfil na primeira chamada (lazy)
 app.get('/api/users/me', authenticate, async (req, res) => {
   try {
-    const user = await db.getUserById(req.userId);
-    if (!user) return res.status(404).json({ error: 'Usuário não encontrado.' });
-    return res.json({ id: user.id, name: user.name, email: user.email, avatar: user.avatar || null });
+    const profile = await db.getOrCreateProfile(req.userId, {
+      email: req.userEmail,
+      name:  sanitize(req.userName),
+    });
+    return res.json({ id: profile.id, name: profile.name, email: profile.email, avatar: profile.avatar || null });
   } catch (err) {
+    console.error('[GET /users/me]', err);
     return res.status(500).json({ error: 'Erro ao buscar usuário.' });
   }
 });
@@ -415,7 +280,7 @@ app.put('/api/users/profile',
   validate,
   async (req, res) => {
     try {
-      const updated = await db.updateUser(req.userId, { name: sanitize(req.body.name) });
+      const updated = await db.updateProfile(req.userId, { name: sanitize(req.body.name) });
       return res.json({ id: updated.id, name: updated.name, email: updated.email, avatar: updated.avatar || null });
     } catch (err) {
       return res.status(500).json({ error: 'Erro ao atualizar perfil.' });
@@ -437,7 +302,7 @@ app.put('/api/users/avatar',
   validate,
   async (req, res) => {
     try {
-      const updated = await db.updateUser(req.userId, { avatar: req.body.uri });
+      const updated = await db.updateProfile(req.userId, { avatar: req.body.uri });
       return res.json({ avatar: updated.avatar });
     } catch (err) {
       return res.status(500).json({ error: 'Erro ao atualizar avatar.' });
