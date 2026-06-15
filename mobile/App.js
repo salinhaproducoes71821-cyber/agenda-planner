@@ -431,6 +431,9 @@ const mapAuthError = (error) => {
   if (m.includes('invalid login'))                          return 'E-mail ou senha incorretos.';
   if (m.includes('already registered') || m.includes('user already')) return 'E-mail já cadastrado.';
   if (m.includes('email not confirmed'))                    return 'Confirme seu e-mail antes de entrar.';
+  if (m.includes('expired') || (m.includes('token') && m.includes('invalid')) || m.includes('otp'))
+                                                            return 'Código inválido ou expirado. Solicite um novo.';
+  if (m.includes('same password') || m.includes('should be different')) return 'A nova senha não pode ser igual à anterior.';
   if (m.includes('password'))                               return 'Senha inválida (mínimo 6 caracteres).';
   if (m.includes('rate limit') || m.includes('too many'))   return 'Muitas tentativas. Aguarde um pouco.';
   return error?.message || 'Erro de autenticação.';
@@ -499,6 +502,24 @@ function AuthProvider({ children }) {
     setCurrentUser(null);
   };
 
+  // Passo 1 do "esqueceu a senha?": dispara o e-mail com o código (OTP) de
+  // recuperação. O Supabase responde sem erro mesmo se o e-mail não existir
+  // (evita enumeração de contas).
+  const requestPasswordReset = async (email) => {
+    const { error } = await supabase.auth.resetPasswordForEmail(email);
+    if (error) throw new Error(mapAuthError(error));
+  };
+
+  // Passo 2: valida o código de recuperação (cria sessão temporária) e define
+  // a nova senha. Em caso de sucesso o usuário já fica logado.
+  const confirmPasswordReset = async (email, token, newPassword) => {
+    const { error: vErr } = await supabase.auth.verifyOtp({ email, token, type: 'recovery' });
+    if (vErr) throw new Error(mapAuthError(vErr));
+    const { error: uErr } = await supabase.auth.updateUser({ password: newPassword });
+    if (uErr) throw new Error(mapAuthError(uErr));
+    await loadProfile();
+  };
+
   const updateAvatar = async (uri) => {
     const updated = await api.updateAvatar(uri);
     const u = { ...currentUser, avatar: updated.avatar };
@@ -514,7 +535,7 @@ function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ currentUser, isLoading, login, register, logout, updateAvatar, updateProfile }}>
+    <AuthContext.Provider value={{ currentUser, isLoading, login, register, logout, updateAvatar, updateProfile, requestPasswordReset, confirmPasswordReset }}>
       {children}
     </AuthContext.Provider>
   );
@@ -1237,6 +1258,162 @@ function Drawer({ visible, onClose }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// FLUXO — ESQUECEU A SENHA (código OTP por e-mail → nova senha)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function ForgotPasswordForm({ onBack }) {
+  const { C, T } = useTheme();
+  const { requestPasswordReset, confirmPasswordReset } = useAuth();
+
+  const [step,        setStep]        = useState('request'); // 'request' | 'verify'
+  const [email,       setEmail]       = useState('');
+  const [code,        setCode]        = useState('');
+  const [senha,       setSenha]       = useState('');
+  const [confirma,    setConfirma]    = useState('');
+  const [showPwd,     setShowPwd]     = useState(false);
+  const [loading,     setLoading]     = useState(false);
+  const [erro,        setErro]        = useState('');
+  const [info,        setInfo]        = useState('');
+  const [fieldErrors, setFieldErrors] = useState({});
+
+  const sendCode = async () => {
+    setErro(''); setFieldErrors({});
+    if (!SECURITY.emailRegex.test(email)) { setFieldErrors({ email: 'E-mail inválido' }); return; }
+    setLoading(true);
+    try {
+      await requestPasswordReset(email.trim().toLowerCase());
+      setInfo('Se existir uma conta com esse e-mail, enviamos um código de 6 dígitos. Confira a caixa de entrada e o spam.');
+      setStep('verify');
+    } catch (e) {
+      setErro(e.message || 'Não foi possível enviar o código.');
+    } finally { setLoading(false); }
+  };
+
+  const doReset = async () => {
+    setErro(''); setFieldErrors({});
+    const erros = {};
+    if (!/^\d{6}$/.test(code.trim())) erros.code = 'Informe o código de 6 dígitos';
+    const pwdErros = SECURITY.validatePassword(senha);
+    if (pwdErros.length > 0)          erros.senha = pwdErros[0];
+    if (senha !== confirma)           erros.confirma = 'As senhas não coincidem';
+    setFieldErrors(erros);
+    if (Object.keys(erros).length) return;
+    setLoading(true);
+    try {
+      await confirmPasswordReset(email.trim().toLowerCase(), code.trim(), senha);
+      // Sucesso: confirmPasswordReset já carrega o perfil → o app navega sozinho.
+    } catch (e) {
+      setErro(e.message || 'Código inválido ou expirado.');
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <View style={{ backgroundColor:C.bg2, borderRadius:16, borderWidth:1, borderColor:C.border2, overflow:'hidden' }}>
+      <View style={{ flexDirection:'row', alignItems:'center', gap:8, paddingHorizontal:16, paddingVertical:12, borderBottomWidth:1, borderBottomColor:C.border }}>
+        <TouchableOpacity onPress={onBack} style={{ minWidth:40, minHeight:40, alignItems:'center', justifyContent:'center' }} {...a11y('Voltar para o login')}>
+          <Icon name="back" size={20} color={C.text2}/>
+        </TouchableOpacity>
+        <Text style={[T.sm, { fontWeight:'700', letterSpacing:1.2, color:C.text }]}>RECUPERAR SENHA</Text>
+      </View>
+
+      <View style={{ padding:24, gap:16 }}>
+        {step === 'request' ? (
+          <>
+            <Text style={[T.sm, { color:C.text2, lineHeight:20 }]}>
+              Informe o e-mail da sua conta. Enviaremos um código de 6 dígitos para você criar uma nova senha.
+            </Text>
+            <Input
+              label="E-MAIL"
+              value={email}
+              onChangeText={setEmail}
+              placeholder="seu@email.com"
+              keyboardType="email-address"
+              error={fieldErrors.email}
+            />
+          </>
+        ) : (
+          <>
+            <Text style={[T.sm, { color:C.text2, lineHeight:20 }]}>
+              Digite o código enviado para{' '}
+              <Text style={{ color:C.text, fontWeight:'700' }}>{email.trim().toLowerCase()}</Text>
+              {' '}e escolha uma nova senha.
+            </Text>
+            <Input
+              label="CÓDIGO (6 DÍGITOS)"
+              value={code}
+              onChangeText={(t) => setCode(t.replace(/\D/g, '').slice(0, 6))}
+              placeholder="000000"
+              keyboardType="number-pad"
+              error={fieldErrors.code}
+            />
+            <Input
+              label="NOVA SENHA"
+              value={senha}
+              onChangeText={setSenha}
+              placeholder="••••••••"
+              secureTextEntry={!showPwd}
+              error={fieldErrors.senha}
+              hint="Mínimo 8 caracteres com maiúscula, número e símbolo"
+              right={
+                <TouchableOpacity onPress={() => setShowPwd(v => !v)} style={{ padding:4, minWidth:32, minHeight:32, alignItems:'center', justifyContent:'center' }} {...a11y(showPwd ? 'Ocultar senha' : 'Mostrar senha')}>
+                  <Icon name={showPwd ? 'eyeOff' : 'eye'} size={18} color={C.text3}/>
+                </TouchableOpacity>
+              }
+            />
+            <PasswordStrengthBar password={senha}/>
+            <Input
+              label="CONFIRMAR NOVA SENHA"
+              value={confirma}
+              onChangeText={setConfirma}
+              placeholder="••••••••"
+              secureTextEntry={!showPwd}
+              error={fieldErrors.confirma}
+            />
+          </>
+        )}
+
+        {!!info && (
+          <View style={{ backgroundColor:C.accentBg, borderWidth:1, borderColor:C.accent + '40', borderRadius:8, padding:12, flexDirection:'row', alignItems:'flex-start', gap:8 }}>
+            <Icon name="mail" size={16} color={C.accent}/>
+            <Text style={[T.sm, { flex:1, color:C.text2, lineHeight:20 }]}>{info}</Text>
+          </View>
+        )}
+
+        {!!erro && (
+          <View style={{ backgroundColor:C.danger + '18', borderWidth:1, borderColor:C.danger + '40', borderRadius:8, padding:12, flexDirection:'row', alignItems:'flex-start', gap:8 }}>
+            <Icon name="error" size={16} color={C.danger}/>
+            <Text style={[T.sm, { flex:1, color:C.danger, lineHeight:20 }]}>{erro}</Text>
+          </View>
+        )}
+
+        <TouchableOpacity
+          style={{ backgroundColor:C.accent, borderRadius:10, minHeight:52, alignItems:'center', justifyContent:'center', marginTop:4, opacity: loading ? 0.7 : 1 }}
+          onPress={step === 'request' ? sendCode : doReset}
+          disabled={loading}
+          {...a11y(step === 'request' ? 'Enviar código' : 'Redefinir senha')}
+        >
+          {loading
+            ? <ActivityIndicator color="#fff" size="small"/>
+            : <Text style={[T.base, { color:'#fff', fontWeight:'700', letterSpacing:1.2 }]}>
+                {step === 'request' ? 'ENVIAR CÓDIGO' : 'REDEFINIR SENHA'}
+              </Text>}
+        </TouchableOpacity>
+
+        {step === 'verify' && (
+          <TouchableOpacity
+            onPress={() => { setStep('request'); setCode(''); setSenha(''); setConfirma(''); setErro(''); setInfo(''); setFieldErrors({}); }}
+            style={{ alignItems:'center', minHeight:44, justifyContent:'center' }}
+            {...a11y('Reenviar código')}
+          >
+            <Text style={[T.sm, { color:C.accent, fontWeight:'700' }]}>Não recebeu? Enviar de novo</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    </View>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // TELA — AUTH (segurança aprimorada)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1335,6 +1512,9 @@ function AuthScreen() {
           </View>
 
           {/* Card */}
+          {mode === 'forgot' ? (
+            <ForgotPasswordForm onBack={() => switchMode('login')} />
+          ) : (
           <View style={{
             backgroundColor:C.bg2, borderRadius:16,
             borderWidth:1, borderColor:C.border2, overflow:'hidden',
@@ -1480,6 +1660,16 @@ function AuthScreen() {
                 }
               </TouchableOpacity>
 
+              {mode === 'login' && (
+                <TouchableOpacity
+                  onPress={() => switchMode('forgot')}
+                  style={{ alignItems:'center', minHeight:44, justifyContent:'center' }}
+                  {...a11y('Esqueceu a senha')}
+                >
+                  <Text style={[T.sm, { color:C.accent, fontWeight:'700' }]}>Esqueceu a senha?</Text>
+                </TouchableOpacity>
+              )}
+
               {/* Indicador de tentativas */}
               {attempts > 0 && mode === 'login' && (
                 <View style={{ flexDirection:'row', alignItems:'center', gap:6, justifyContent:'center' }}>
@@ -1491,6 +1681,7 @@ function AuthScreen() {
               )}
             </View>
           </View>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
