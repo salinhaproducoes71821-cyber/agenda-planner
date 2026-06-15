@@ -1056,7 +1056,7 @@ function TopBar({ onMenuPress, title, subtitle, right }) {
   // adicione também inset inferior dentro da barra de navegação
   const topPad = Platform.OS === 'android' ? (StatusBar.currentHeight || 0) : 0;
   return (
-    <SafeAreaView edges={['top']} style={{ backgroundColor: C.bg, borderBottomWidth: 1, borderBottomColor: C.border2 }}>
+    <SafeAreaView edges={[]} style={{ backgroundColor: C.bg, borderBottomWidth: 1, borderBottomColor: C.border2 }}>
       <StatusBar
         barStyle={C.bg === '#f5f0e8' || C.bg === '#f0f4f8' ? 'dark-content' : 'light-content'}
         backgroundColor={C.bg}
@@ -3360,7 +3360,7 @@ function AppShell() {
   };
 
   return (
-    <View style={{ flex:1, backgroundColor:C.bg, overflow:'hidden', paddingBottom: insets.bottom }}>
+    <View style={{ flex:1, backgroundColor:C.bg, overflow:'hidden', paddingTop: insets.top, paddingBottom: insets.bottom }}>
       {isOffline && (
         <View style={{
           backgroundColor: C.warn + '22',
