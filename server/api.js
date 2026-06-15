@@ -82,14 +82,6 @@ if (!HAS_HS256 && !HAS_JWKS) {
   console.warn(`[AVISO] ${msg}`);
 }
 
-// Log de diagnóstico (apenas valores públicos). JSON.stringify revela aspas/
-// espaços acidentais na variável (ex.: "https://...co " com espaço no fim).
-console.log(
-  `[auth-config] HAS_HS256=${HAS_HS256} HAS_JWKS=${HAS_JWKS} ` +
-  `SUPABASE_URL=${JSON.stringify(process.env.SUPABASE_URL || null)} ` +
-  `JWKS_URL=${JSON.stringify(JWKS_URL)}`
-);
-
 // Cache simples do JWKS (chaves públicas do Supabase). Recarrega quando expira
 // o TTL ou quando aparece um `kid` desconhecido (rotação de chave).
 let _jwksCache = { keys: [], fetchedAt: 0 };
@@ -569,19 +561,6 @@ app.post('/api/moods',
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', db: process.env.DB_TYPE || 'mongo', timestamp: new Date().toISOString() });
-});
-
-// Diagnóstico temporário: confirma QUAL código serve a URL pública e o que ele
-// enxerga da config de auth. Sem segredos. Remover após resolver o 401.
-app.get('/api/__authdiag', (req, res) => {
-  res.json({
-    build: 'es256-diag-1',
-    hasHs256: HAS_HS256,
-    hasJwks: HAS_JWKS,
-    jwksUrl: JWKS_URL,
-    node: process.version,
-    fetch: typeof fetch,
-  });
 });
 
 // ─── 404 ─────────────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
 
-const API_BASE = 'https://agenda-planner-production.up.railway.app';
+const API_BASE = 'https://agenda-planner-production-392f.up.railway.app';
 
 // O access token vem da sessão do Supabase (renovada automaticamente pelo SDK).
 const getAccessToken = async () => {
