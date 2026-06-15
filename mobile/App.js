@@ -1282,7 +1282,7 @@ function ForgotPasswordForm({ onBack }) {
     setLoading(true);
     try {
       await requestPasswordReset(email.trim().toLowerCase());
-      setInfo('Se existir uma conta com esse e-mail, enviamos um código de 6 dígitos. Confira a caixa de entrada e o spam.');
+      setInfo('Se existir uma conta com esse e-mail, enviamos um código de verificação. Confira a caixa de entrada e o spam.');
       setStep('verify');
     } catch (e) {
       setErro(e.message || 'Não foi possível enviar o código.');
@@ -1292,7 +1292,7 @@ function ForgotPasswordForm({ onBack }) {
   const doReset = async () => {
     setErro(''); setFieldErrors({});
     const erros = {};
-    if (!/^\d{6}$/.test(code.trim())) erros.code = 'Informe o código de 6 dígitos';
+    if (!/^\d{6,10}$/.test(code.trim())) erros.code = 'Informe o código recebido por e-mail';
     const pwdErros = SECURITY.validatePassword(senha);
     if (pwdErros.length > 0)          erros.senha = pwdErros[0];
     if (senha !== confirma)           erros.confirma = 'As senhas não coincidem';
@@ -1320,7 +1320,7 @@ function ForgotPasswordForm({ onBack }) {
         {step === 'request' ? (
           <>
             <Text style={[T.sm, { color:C.text2, lineHeight:20 }]}>
-              Informe o e-mail da sua conta. Enviaremos um código de 6 dígitos para você criar uma nova senha.
+              Informe o e-mail da sua conta. Enviaremos um código de verificação para você criar uma nova senha.
             </Text>
             <Input
               label="E-MAIL"
@@ -1339,10 +1339,10 @@ function ForgotPasswordForm({ onBack }) {
               {' '}e escolha uma nova senha.
             </Text>
             <Input
-              label="CÓDIGO (6 DÍGITOS)"
+              label="CÓDIGO DO E-MAIL"
               value={code}
-              onChangeText={(t) => setCode(t.replace(/\D/g, '').slice(0, 6))}
-              placeholder="000000"
+              onChangeText={(t) => setCode(t.replace(/\D/g, '').slice(0, 10))}
+              placeholder="Código recebido por e-mail"
               keyboardType="number-pad"
               error={fieldErrors.code}
             />
