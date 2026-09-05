@@ -9,8 +9,17 @@ coverage/
 !.env.example
 *.pem
 *.key
+*.p12
+*.pfx
 credentials.json
 *.keystore
 *.jks
 *.log
 .DS_Store
+Thumbs.db
+.eas-build/
+*.apk
+*.aab
+.metro-health-check*
+*.orig.*
+*.bak

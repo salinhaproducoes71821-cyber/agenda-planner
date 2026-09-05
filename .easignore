@@ -1,0 +1,40 @@
+# EAS archives this Git repository from its root, even when run in mobile/.
+# Keep mobile/build/: it contains the Metro transformer and image parser policy.
+.git
+node_modules/
+.expo/
+dist/
+web-build/
+coverage/
+.worktrees/
+.eas-build/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+*.keystore
+*.jks
+*.apk
+*.aab
+*.log
+.DS_Store
+Thumbs.db
+.metro-health-check*
+*.orig.*
+*.bak
+
+# Server music is streamed over HTTPS; these files are not APK assets.
+/server/
+/docs/
+/review/
+/scripts/
+/.github/
+/COMO_RODAR.txt
+/README.md
+/prototipo
+/mobile/tests/
+/mobile/assets/sounds/README.md
