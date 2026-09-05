@@ -127,6 +127,9 @@ function createMongoAdapter() {
     connect: async () => {
       const uri = process.env.MONGO_URI || 'mongodb://localhost:27017/agenda';
       await mongoose.connect(uri, {
+        maxPoolSize: 5,
+        minPoolSize: 0,
+        maxIdleTimeMS: 60000,
         serverSelectionTimeoutMS: 5000,
         socketTimeoutMS: 45000,
       });

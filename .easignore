@@ -8,6 +8,7 @@ web-build/
 coverage/
 .worktrees/
 .eas-build/
+.aws-build/
 .env
 .env.*
 !.env.example

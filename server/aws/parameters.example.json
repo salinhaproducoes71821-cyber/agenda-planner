@@ -1,0 +1,10 @@
+[
+  {"ParameterKey":"ArtifactBucket","ParameterValue":"SUBSTITUA_BUCKET_PRIVADO"},
+  {"ParameterKey":"ArtifactKey","ParameterValue":"agenda/SUBSTITUA_SHA256.zip"},
+  {"ParameterKey":"MongoUri","ParameterValue":"mongodb+srv://USUARIO:SENHA@HOST/agenda"},
+  {"ParameterKey":"SupabaseUrl","ParameterValue":"https://SUBSTITUA.supabase.co"},
+  {"ParameterKey":"SupabaseJwtSecret","ParameterValue":""},
+  {"ParameterKey":"AllowedOrigins","ParameterValue":""},
+  {"ParameterKey":"ReservedConcurrency","ParameterValue":"5"},
+  {"ParameterKey":"NetworkAccessReviewed","ParameterValue":"REVISE_ANTES_DE_PREENCHER_yes"}
+]

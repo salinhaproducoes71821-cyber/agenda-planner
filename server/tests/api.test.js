@@ -29,6 +29,16 @@ function call(path, body, claims) {
 test('rejects signed tokens from another issuer', async () => {
   expect((await call('/api/events', null, {iss: 'https://other.invalid/auth/v1'})).status).toBe(401);
 });
+test('health is public but event data still requires a JWT', async () => {
+  expect((await fetch(base+'/api/health')).status).toBe(200);
+  expect((await fetch(base+'/api/events')).status).toBe(401);
+});
+test('native music player can request a byte range from a large MP3', async () => {
+  const response = await fetch(base+'/music/rudolph.mp3', {headers:{range:'bytes=0-15'}});
+  expect(response.status).toBe(206);
+  expect(response.headers.get('content-range')).toMatch(/^bytes 0-15\/\d+$/);
+  expect((await response.arrayBuffer()).byteLength).toBe(16);
+});
 test('requires a UUID subject and expiry', async () => {
   expect((await call('/api/events', null, {sub: 'not-a-user'})).status).toBe(401);
   expect((await call('/api/events', null, {exp: undefined})).status).toBe(401);

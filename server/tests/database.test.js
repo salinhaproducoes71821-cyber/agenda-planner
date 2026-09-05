@@ -26,6 +26,14 @@ function mongo() {
   return { api, models: mongoose.models };
 }
 
+test('Mongo startup limits the warm-process connection pool', async () => {
+  const { api } = mongo();
+  const mongoose = require('mongoose');
+  const connect = jest.spyOn(mongoose, 'connect').mockResolvedValue(mongoose);
+  await api.connect();
+  expect(connect).toHaveBeenCalledWith(expect.any(String),expect.objectContaining({maxPoolSize:5,minPoolSize:0,maxIdleTimeMS:60000}));
+});
+
 test('rejects an unsupported database selection instead of silently choosing MongoDB', () => {
   jest.resetModules();
   process.env.DB_TYPE = 'typo';

@@ -12,7 +12,8 @@
         "key": "preview-v1-{{ checksum \"package-lock.json\" }}"
       },
       "env": {
-        "EXPO_NO_TELEMETRY": "1"
+        "EXPO_NO_TELEMETRY": "1",
+        "EXPO_PUBLIC_API_URL": "https://5iqcsa5wa7y3xb7eueqtapx5zm0tzrri.lambda-url.us-east-1.on.aws"
       }
     },
     "production": {
@@ -23,7 +24,8 @@
         "key": "production-v1-{{ checksum \"package-lock.json\" }}"
       },
       "env": {
-        "EXPO_NO_TELEMETRY": "1"
+        "EXPO_NO_TELEMETRY": "1",
+        "EXPO_PUBLIC_API_URL": "https://5iqcsa5wa7y3xb7eueqtapx5zm0tzrri.lambda-url.us-east-1.on.aws"
       }
     }
   }

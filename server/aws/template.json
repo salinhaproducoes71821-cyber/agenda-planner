@@ -1,0 +1,242 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Agenda API on Lambda; existing MongoDB and Supabase; no database or VPC created.",
+  "Parameters": {
+    "ArtifactBucket": {
+      "Type": "String",
+      "Description": "Existing private S3 bucket in this region holding the ZIP"
+    },
+    "ArtifactKey": {
+      "Type": "String",
+      "Description": "Versioned S3 key of agenda-backend.zip (use its SHA256 in the key)"
+    },
+    "MongoUri": {
+      "Type": "String",
+      "NoEcho": true,
+      "AllowedPattern": "mongodb\\+srv://.+",
+      "Description": "Existing Atlas connection string with database name and least-privilege credentials"
+    },
+    "SupabaseUrl": {
+      "Type": "String",
+      "AllowedPattern": "https://[a-z0-9-]+\\.supabase\\.co",
+      "Description": "Same Supabase project used by mobile"
+    },
+    "SupabaseJwtSecret": {
+      "Type": "String",
+      "NoEcho": true,
+      "Default": "",
+      "Description": "Only for HS256 legacy; leave blank for asymmetric signing keys"
+    },
+    "AllowedOrigins": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Optional comma-separated exact web origins; native app needs no CORS origin"
+    },
+    "ReservedConcurrency": {
+      "Type": "Number",
+      "Default": 5,
+      "MinValue": -1,
+      "MaxValue": 20,
+      "Description": "Concurrent invocation limit; -1 uses account shared quota for new accounts, 0 disables requests. Not a spending cap."
+    },
+    "NetworkAccessReviewed": {
+      "Type": "String",
+      "AllowedValues": [
+        "yes"
+      ],
+      "Description": "Confirm Atlas network access was reviewed: this template has no fixed outbound IP or private VPC."
+    }
+  },
+  "Resources": {
+    "ApiLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${AWS::StackName}-api"
+        },
+        "RetentionInDays": 14
+      }
+    },
+    "ApiRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "WriteFunctionLogs",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "ApiLogs",
+                      "Arn"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "ApiFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${AWS::StackName}-api"
+        },
+        "Runtime": "nodejs22.x",
+        "Architectures": [
+          "arm64"
+        ],
+        "Handler": "run.sh",
+        "MemorySize": 512,
+        "Timeout": 60,
+        "ReservedConcurrentExecutions": {
+          "Fn::If": [
+            "UseReservedConcurrency",
+            {
+              "Ref": "ReservedConcurrency"
+            },
+            {
+              "Ref": "AWS::NoValue"
+            }
+          ]
+        },
+        "Role": {
+          "Fn::GetAtt": [
+            "ApiRole",
+            "Arn"
+          ]
+        },
+        "Code": {
+          "S3Bucket": {
+            "Ref": "ArtifactBucket"
+          },
+          "S3Key": {
+            "Ref": "ArtifactKey"
+          }
+        },
+        "Layers": [
+          {
+            "Fn::Sub": "arn:${AWS::Partition}:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerArm64:28"
+          }
+        ],
+        "Environment": {
+          "Variables": {
+            "NODE_ENV": "production",
+            "DB_TYPE": "mongo",
+            "MONGO_URI": {
+              "Ref": "MongoUri"
+            },
+            "SUPABASE_URL": {
+              "Ref": "SupabaseUrl"
+            },
+            "SUPABASE_JWT_SECRET": {
+              "Ref": "SupabaseJwtSecret"
+            },
+            "ALLOWED_ORIGINS": {
+              "Ref": "AllowedOrigins"
+            },
+            "TRUST_PROXY": "",
+            "PORT": "3000",
+            "AWS_LAMBDA_EXEC_WRAPPER": "/opt/bootstrap",
+            "AWS_LWA_PORT": "3000",
+            "AWS_LWA_READINESS_CHECK_PATH": "/api/health",
+            "AWS_LWA_READINESS_CHECK_HEALTHY_STATUS": "200",
+            "AWS_LWA_INVOKE_MODE": "response_stream",
+            "AWS_LWA_ASYNC_INIT": "true"
+          }
+        }
+      }
+    },
+    "ApiUrl": {
+      "Type": "AWS::Lambda::Url",
+      "Properties": {
+        "TargetFunctionArn": {
+          "Fn::GetAtt": [
+            "ApiFunction",
+            "Arn"
+          ]
+        },
+        "AuthType": "NONE",
+        "InvokeMode": "RESPONSE_STREAM"
+      }
+    },
+    "UrlPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "ApiFunction"
+        },
+        "Action": "lambda:InvokeFunctionUrl",
+        "Principal": "*",
+        "FunctionUrlAuthType": "NONE"
+      }
+    },
+    "InvokeViaUrlPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "ApiFunction"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "*",
+        "InvokedViaFunctionUrl": true
+      }
+    }
+  },
+  "Outputs": {
+    "ApiBaseUrl": {
+      "Description": "Use as EXPO_PUBLIC_API_URL when rebuilding mobile (without trailing slash)",
+      "Value": {
+        "Fn::GetAtt": [
+          "ApiUrl",
+          "FunctionUrl"
+        ]
+      }
+    },
+    "FunctionName": {
+      "Value": {
+        "Ref": "ApiFunction"
+      }
+    },
+    "LogGroup": {
+      "Value": {
+        "Ref": "ApiLogs"
+      }
+    }
+  },
+  "Conditions": {
+    "UseReservedConcurrency": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "ReservedConcurrency"
+            },
+            -1
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -37,6 +37,7 @@ require('dotenv').config();
 
 const { randomUUID } = require('node:crypto');
 const path = require('node:path');
+const { lambdaClientIp } = require('./aws-runtime');
 const { createAuthenticator } = require('./auth');
 const { isDate, eventValidators, noteValidators, pageValidators, page } = require('./validation');
 const express   = require('express');
@@ -107,6 +108,7 @@ const generalLimiter = rateLimit({
   max: 100,
   standardHeaders: true,
   legacyHeaders:   false,
+  keyGenerator: req => lambdaClientIp(req),
   message: { error: 'Muitas requisições. Tente novamente em breve.' },
 });
 

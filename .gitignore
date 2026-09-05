@@ -18,6 +18,7 @@ credentials.json
 .DS_Store
 Thumbs.db
 .eas-build/
+.aws-build/
 *.apk
 *.aab
 .metro-health-check*
