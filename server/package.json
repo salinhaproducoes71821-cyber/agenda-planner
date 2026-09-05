@@ -6,10 +6,11 @@
   "scripts": {
     "start": "node api.js",
     "dev": "nodemon api.js",
-    "test": "jest --forceExit"
+    "test": "jest --runInBand"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.22.3 <23",
+    "npm": "12.0.2"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -22,11 +23,14 @@
     "mongoose": "^8.5.1",
     "morgan": "^1.10.0",
     "mysql2": "^3.10.1",
-    "sequelize": "^6.37.3",
-    "uuid": "^10.0.0"
+    "sequelize": "^6.37.3"
   },
   "devDependencies": {
     "jest": "^29.7.0",
     "nodemon": "^3.1.4"
+  },
+  "packageManager": "npm@12.0.2",
+  "overrides": {
+    "qs": "6.16.0"
   }
 }

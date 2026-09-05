@@ -19,6 +19,13 @@
 // usuário (nome/avatar), sempre chaveado pelo UID do Supabase.
 
 const DB_TYPE = (process.env.DB_TYPE || 'mongo').toLowerCase();
+if (!['mongo', 'mysql'].includes(DB_TYPE)) {
+  throw new Error('DB_TYPE deve ser mongo ou mysql.');
+}
+
+function idConflict() {
+  return Object.assign(new Error('Identificador indisponível.'), { status: 409 });
+}
 
 if (DB_TYPE === 'mysql') {
   module.exports = createMySQLAdapter();
@@ -96,6 +103,23 @@ function createMongoAdapter() {
   const mapNote  = (d) => d ? ({ id: d._id, userId: d.userId, titulo: d.titulo, conteudo: d.conteudo, tags: d.tags, updatedAt: d.updatedAt }) : null;
   const mapMood  = (d) => d ? ({ id: d._id?.toString(), userId: d.userId, data: d.data, nivel: d.nivel }) : null;
 
+  // Retry-safe creation: never replace an existing record or touch another owner.
+  const createOnce = async (Model, fields) => {
+    const id = fields._id || new Types.ObjectId().toString();
+    const filter = { _id: id, userId: fields.userId };
+    try {
+      return await Model.findOneAndUpdate(filter, {
+        $setOnInsert: { ...fields, _id: id, createdAt: new Date(), updatedAt: fields.updatedAt || new Date() },
+      }, { new: true, upsert: true, setDefaultsOnInsert: true, runValidators: true, timestamps: false }).lean();
+    } catch (error) {
+      if (error.code !== 11000) throw error;
+      // Two simultaneous retries may race on the unique ID. Read only our owner.
+      const existing = await Model.findOne(filter).lean();
+      if (existing) return existing;
+      throw idConflict();
+    }
+  };
+
   // ─── API pública ──────────────────────────────────────────────────────────
 
   return {
@@ -106,7 +130,7 @@ function createMongoAdapter() {
         serverSelectionTimeoutMS: 5000,
         socketTimeoutMS: 45000,
       });
-      console.log('[MongoDB] Conectado:', uri.replace(/:\/\/.*@/, '://***@'));
+      console.log('[MongoDB] Conectado.');
     },
 
     close: async () => {
@@ -120,7 +144,7 @@ function createMongoAdapter() {
       const doc = await Profile.findByIdAndUpdate(
         uid,
         { $setOnInsert: { name: name || '', email: email || '' } },
-        { new: true, upsert: true, setDefaultsOnInsert: true }
+        { new: true, upsert: true, setDefaultsOnInsert: true, runValidators: true }
       ).lean();
       return mapProfile(doc);
     },
@@ -131,19 +155,19 @@ function createMongoAdapter() {
     },
 
     updateProfile: async (uid, fields) => {
-      const doc = await Profile.findByIdAndUpdate(uid, { $set: fields }, { new: true, upsert: true }).lean();
+      const doc = await Profile.findByIdAndUpdate(uid, { $set: fields }, { new: true, upsert: true, runValidators: true }).lean();
       return mapProfile(doc);
     },
 
     // ── Eventos ───────────────────────────────────────────────────────────────
-    getEventsByUser: async (userId) => {
-      const docs = await Event.find({ userId }).sort({ data: 1, hora: 1 }).lean();
+    getEventsByUser: async (userId, { limit = 200, offset = 0 } = {}) => {
+      const docs = await Event.find({ userId }).sort({ data: 1, hora: 1, _id: 1 }).skip(offset).limit(limit).lean();
       return docs.map(mapEvent);
     },
 
-    getEventsByMonth: async (userId, mes) => {
+    getEventsByMonth: async (userId, mes, { limit = 200, offset = 0 } = {}) => {
       // mes = 'YYYY-MM' — usa regex para corresponder ao prefixo da data
-      const docs = await Event.find({ userId, data: { $regex: `^${mes}` } }).sort({ data: 1, hora: 1 }).lean();
+      const docs = await Event.find({ userId, data: { $regex: `^${mes}` } }).sort({ data: 1, hora: 1, _id: 1 }).skip(offset).limit(limit).lean();
       return docs.map(mapEvent);
     },
 
@@ -153,7 +177,7 @@ function createMongoAdapter() {
     },
 
     createEvent: async (event) => {
-      const doc = await Event.create({
+      const doc = await createOnce(Event, {
         _id: event.id, userId: event.userId, titulo: event.titulo,
         data: event.data, hora: event.hora, cor: event.cor,
         lembrete: event.lembrete, alarmSound: event.alarmSound, descricao: event.descricao,
@@ -162,7 +186,7 @@ function createMongoAdapter() {
     },
 
     updateEvent: async (id, userId, fields) => {
-      const doc = await Event.findOneAndUpdate({ _id: id, userId }, { $set: fields }, { new: true }).lean();
+      const doc = await Event.findOneAndUpdate({ _id: id, userId }, { $set: fields }, { new: true, runValidators: true }).lean();
       return mapEvent(doc);
     },
 
@@ -172,7 +196,7 @@ function createMongoAdapter() {
     },
 
     // ── Notas ─────────────────────────────────────────────────────────────────
-    getNotesByUser: async (userId, { q, tag } = {}) => {
+    getNotesByUser: async (userId, { q, tag, limit = 200, offset = 0 } = {}) => {
       const filter = { userId };
       if (q) {
         const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
@@ -181,7 +205,7 @@ function createMongoAdapter() {
       if (tag) {
         filter.tags = tag.toLowerCase();
       }
-      const docs = await Note.find(filter).sort({ updatedAt: -1 }).lean();
+      const docs = await Note.find(filter).sort({ updatedAt: -1, _id: 1 }).skip(offset).limit(limit).lean();
       return docs.map(mapNote);
     },
 
@@ -191,7 +215,7 @@ function createMongoAdapter() {
     },
 
     createNote: async (note) => {
-      const doc = await Note.create({
+      const doc = await createOnce(Note, {
         _id: note.id, userId: note.userId, titulo: note.titulo,
         conteudo: note.conteudo, tags: note.tags, updatedAt: note.updatedAt,
       });
@@ -199,7 +223,7 @@ function createMongoAdapter() {
     },
 
     updateNote: async (id, userId, fields) => {
-      const doc = await Note.findOneAndUpdate({ _id: id, userId }, { $set: fields }, { new: true }).lean();
+      const doc = await Note.findOneAndUpdate({ _id: id, userId }, { $set: fields }, { new: true, runValidators: true }).lean();
       return mapNote(doc);
     },
 
@@ -222,7 +246,7 @@ function createMongoAdapter() {
       const doc = await Mood.findOneAndUpdate(
         { userId, data },
         { $set: { nivel } },
-        { new: true, upsert: true }
+        { new: true, upsert: true, runValidators: true }
       ).lean();
       return mapMood(doc);
     },
@@ -267,6 +291,12 @@ function createMySQLAdapter() {
     dialectOptions: {
       // Obrigatório para MySQL 8+
       charset: 'utf8mb4',
+      ...((process.env.MYSQL_SSL === 'true' || process.env.MYSQL_SSL_CA) ? {
+        ssl: {
+          rejectUnauthorized: true,
+          ...(process.env.MYSQL_SSL_CA ? { ca: process.env.MYSQL_SSL_CA.replace(/\\n/g, '\n') } : {}),
+        },
+      } : {}),
     },
   });
 
@@ -298,7 +328,7 @@ function createMySQLAdapter() {
     titulo:    { type: DataTypes.STRING(200),   defaultValue: '' },
     conteudo:  { type: DataTypes.TEXT('long'),  defaultValue: '' },
     // Tags armazenadas como JSON string; MySQL 5.7+ suporta JSON nativo
-    tagsRaw:   { type: DataTypes.JSON,          defaultValue: '[]', field: 'tags' },
+    tagsRaw:   { type: DataTypes.JSON,          defaultValue: [], field: 'tags' },
     updatedAt: { type: DataTypes.DATEONLY,      field: 'updated_at' },
   }, {
     tableName: 'notes',
@@ -344,15 +374,22 @@ function createMySQLAdapter() {
     nivel: r.nivel,
   }) : null;
 
+  const createOnce = async (Model, fields) => {
+    const [record] = await Model.findOrCreate({ where: { id: fields.id }, defaults: fields });
+    const row = record.get({ plain: true });
+    if (row.userId !== fields.userId) throw idConflict();
+    return row;
+  };
+
   // ─── API pública ──────────────────────────────────────────────────────────
 
   return {
     // ── Conexão ──────────────────────────────────────────────────────────────
     connect: async () => {
       await sequelize.authenticate();
-      // sync({ alter: true }) em dev; em produção use migrações Sequelize CLI
-      await sequelize.sync({ alter: process.env.NODE_ENV === 'development' });
-      console.log('[MySQL] Conectado e schema sincronizado.');
+      // Production schema changes require explicit migrations.
+      if (['development', 'test'].includes(process.env.NODE_ENV)) await sequelize.sync();
+      console.log('[MySQL] Conectado.');
     },
 
     close: async () => {
@@ -380,19 +417,20 @@ function createMySQLAdapter() {
     },
 
     // ── Eventos ───────────────────────────────────────────────────────────────
-    getEventsByUser: async (userId) => {
-      const rows = await Event.findAll({ where: { userId }, order: [['data', 'ASC'], ['hora', 'ASC']], raw: true });
+    getEventsByUser: async (userId, { limit = 200, offset = 0 } = {}) => {
+      const rows = await Event.findAll({ where: { userId }, order: [['data', 'ASC'], ['hora', 'ASC'], ['id', 'ASC']], limit, offset, raw: true });
       return rows.map(mapEvent);
     },
 
-    getEventsByMonth: async (userId, mes) => {
+    getEventsByMonth: async (userId, mes, { limit = 200, offset = 0 } = {}) => {
       // mes = 'YYYY-MM' — filtra com LIKE no campo data (DATEONLY guardado como string)
       const rows = await Event.findAll({
         where: {
           userId,
           data: { [Op.like]: `${mes}%` },
         },
-        order: [['data', 'ASC'], ['hora', 'ASC']],
+        order: [['data', 'ASC'], ['hora', 'ASC'], ['id', 'ASC']],
+        limit, offset,
         raw: true,
       });
       return rows.map(mapEvent);
@@ -404,12 +442,12 @@ function createMySQLAdapter() {
     },
 
     createEvent: async (event) => {
-      const row = await Event.create({
+      const row = await createOnce(Event, {
         id: event.id, userId: event.userId, titulo: event.titulo,
         data: event.data, hora: event.hora, cor: event.cor,
         lembrete: event.lembrete, alarmSound: event.alarmSound, descricao: event.descricao,
       });
-      return mapEvent(row.get({ plain: true }));
+      return mapEvent(row);
     },
 
     updateEvent: async (id, userId, fields) => {
@@ -421,7 +459,7 @@ function createMySQLAdapter() {
         },
         { where: { id, userId } }
       );
-      const row = await Event.findOne({ where: { id }, raw: true });
+      const row = await Event.findOne({ where: { id, userId }, raw: true });
       return mapEvent(row);
     },
 
@@ -431,7 +469,7 @@ function createMySQLAdapter() {
     },
 
     // ── Notas ─────────────────────────────────────────────────────────────────
-    getNotesByUser: async (userId, { q, tag } = {}) => {
+    getNotesByUser: async (userId, { q, tag, limit = 200, offset = 0 } = {}) => {
       const where = { userId };
       if (q) {
         where[Op.or] = [
@@ -439,32 +477,27 @@ function createMySQLAdapter() {
           { conteudo: { [Op.like]: `%${q}%` } },
         ];
       }
-      // Para tag: MySQL JSON_CONTAINS — usamos query raw para evitar overhead do Sequelize
       if (tag) {
-        const [rows] = await sequelize.query(
-          'SELECT * FROM notes WHERE user_id = ? AND JSON_CONTAINS(tags, ?) ORDER BY updated_at DESC',
-          { replacements: [userId, JSON.stringify(tag.toLowerCase())], type: Sequelize.QueryTypes.SELECT }
+        // Sequelize escapes the JSON string as a value, preserving q + tag together.
+        where[Op.and] = Sequelize.where(
+          Sequelize.fn('JSON_CONTAINS', Sequelize.col('tags'), JSON.stringify(tag.toLowerCase())), 1
         );
-        // rows pode ser array ou objeto dependendo da versão do mysql2
-        const list = Array.isArray(rows) ? rows : [rows].filter(Boolean);
-        return list.map(r => mapNote({ ...r, tagsRaw: r.tags }));
       }
-      const rows = await Note.findAll({ where, order: [['updatedAt', 'DESC']], raw: true });
-      return rows.map(r => mapNote({ ...r, tagsRaw: r.tags }));
+      const rows = await Note.findAll({ where, order: [['updatedAt', 'DESC'], ['id', 'ASC']], limit, offset, raw: true });
+      return rows.map(mapNote);
     },
 
     getNoteById: async (id, userId) => {
       const row = await Note.findOne({ where: { id, userId }, raw: true });
-      return row ? mapNote({ ...row, tagsRaw: row.tags }) : null;
+      return mapNote(row);
     },
 
     createNote: async (note) => {
-      const row = await Note.create({
+      const row = await createOnce(Note, {
         id: note.id, userId: note.userId, titulo: note.titulo,
         conteudo: note.conteudo, tagsRaw: note.tags, updatedAt: note.updatedAt,
       });
-      const plain = row.get({ plain: true });
-      return mapNote({ ...plain, tagsRaw: plain.tags });
+      return mapNote(row);
     },
 
     updateNote: async (id, userId, fields) => {
@@ -472,8 +505,8 @@ function createMySQLAdapter() {
         { titulo: fields.titulo, conteudo: fields.conteudo, tagsRaw: fields.tags, updatedAt: fields.updatedAt },
         { where: { id, userId } }
       );
-      const row = await Note.findOne({ where: { id }, raw: true });
-      return row ? mapNote({ ...row, tagsRaw: row.tags }) : null;
+      const row = await Note.findOne({ where: { id, userId }, raw: true });
+      return mapNote(row);
     },
 
     deleteNote: async (id, userId) => {

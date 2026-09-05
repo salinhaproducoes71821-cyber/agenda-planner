@@ -1,135 +1,92 @@
-════════════════════════════════════════════════════════════════════
-  AGENDA APP v3.0 — GUIA DE INSTALAÇÃO E EXECUÇÃO
-════════════════════════════════════════════════════════════════════
+AGENDA PLANNER — INSTALAÇÃO E EXECUÇÃO
+Atualizado em 05/09/2026
 
-REQUISITOS
-──────────
-  - Node.js 20 LTS  →  https://nodejs.org  (baixe a versão LTS)
-  - nvm-windows (recomendado para gerenciar versões do Node)
-      winget install CoreyButler.NVMforWindows
-  - Expo Go instalado no celular (versão 54.x)
-      Android: Play Store → "Expo Go"
-  - Conta no MongoDB Atlas (gratuita) → https://mongodb.com/atlas
-  - Celular e computador na mesma rede Wi-Fi
+1. FERRAMENTAS
+Use Node 22.22.3 (.nvmrc) e npm 12.0.2. A instalação é independente nas
+pastas server e mobile. Não rode npm install na raiz.
 
+  cd server
+  npm ci --ignore-scripts
+  npm test
 
-════════════════════════════════════════════════════════════════════
-  PASSO 1 — BANCO DE DADOS (MongoDB Atlas)
-════════════════════════════════════════════════════════════════════
+Em outro terminal, a partir da raiz:
+  cd mobile
+  npm ci --ignore-scripts
+  npm test
 
-  1. Acesse mongodb.com/atlas e crie uma conta gratuita
-  2. Crie um cluster M0 (Free)
-  3. Em "Database Access" → Add New Database User
-       Usuário: escolha um nome
-       Senha:   escolha uma senha forte
-       Permissão: "Read and write to any database"
-  4. Em "Network Access" → Add IP Address → Allow Access from Anywhere (0.0.0.0/0)
-  5. Em "Connect" → Drivers → copie a connection string:
-       mongodb+srv://USUARIO:SENHA@seucluster.mongodb.net/?appName=NomeApp
+Os .npmrc bloqueiam lifecycle scripts de dependências e preservam o modo
+legacy-peer-deps usado para gerar os lockfiles. Não use audit fix --force.
+Os scripts explícitos npm test/npm start continuam disponíveis.
 
+2. API LOCAL
+Copie server/.env.example para server/.env. Nunca versionar .env.
+Configure DB_TYPE=mongo ou mysql e credenciais do ambiente de desenvolvimento.
+Use um banco descartável para testes manuais.
+SUPABASE_URL é obrigatória e deve apontar ao mesmo projeto usado no mobile.
+Com chaves assimétricas, deixe SUPABASE_JWT_SECRET vazio: a API usa JWKS.
+Para HS256 legado, use o JWT Secret real desse projeto (mínimo 32 caracteres),
+não uma chave inventada. Placeholders são recusados. JWT_SECRET e
+JWT_REFRESH_SECRET não são usados por esta aplicação.
 
-════════════════════════════════════════════════════════════════════
-  PASSO 2 — CONFIGURAR O PROJETO
-════════════════════════════════════════════════════════════════════
+Na pasta server:
+  npm start
 
-  2.1. Instale o Node 20 (se usar nvm-windows):
-         nvm install 20
-         nvm use 20
+O endpoint /api/health responde sem token. Os demais dados exigem access token
+do Supabase com issuer do projeto, audiência authenticated, UUID sub e exp.
+O módulo exporta Express sem abrir porta nem conectar banco quando importado
+pelos testes.
 
-  2.2. Instale as dependências:
-         npm install
+3. BANCO
+Mongo local: MONGO_URI=mongodb://localhost:27017/agenda.
+Mongo remoto: utilize TLS (mongodb+srv quando suportado), usuário readWrite
+apenas no banco da aplicação e allowlist de IPs da infraestrutura. Não libere
+0.0.0.0/0 como padrão.
 
-  2.3. Crie o arquivo .env na raiz do projeto copiando o .env.example:
-         cp .env.example .env   (ou copie e renomeie manualmente)
+MySQL local: configure MYSQL_HOST/PORT/USER/PASSWORD/DATABASE. Em development
+ou test, sync() cria tabelas ausentes; não usa alter nem force. Em produção,
+a API não modifica o schema. Prepare/migre o schema previamente com usuário
+administrativo separado, backup e validação em staging. Uma base existente
+mantém o schema anterior; adicionar índices deve ser uma migração revisada.
+Use usuário de runtime restrito a SELECT/INSERT/UPDATE/DELETE nas tabelas do app.
+MySQL remoto: MYSQL_SSL=true; se necessário MYSQL_SSL_CA com a CA PEM do
+provedor (aceita \n). A verificação do certificado permanece ativa.
+Não use NODE_ENV=development contra o banco de produção para criar tabelas.
 
-  2.4. Edite o .env com seus dados:
+4. MOBILE
+mobile/supabase.js contém a URL e anon key públicas do projeto. Se usar outro
+projeto, altere ambos e AUTH_STORAGE_KEY; não coloque service_role no cliente.
+Configure EXPO_PUBLIC_API_URL com a URL HTTPS da sua API em mobile/.env.
+Sem essa variável, config.js mantém a URL Railway já usada pelo projeto.
+Variáveis EXPO_PUBLIC são incorporadas ao bundle e não guardam segredos.
+Para desenvolvimento com celular, exponha a API de teste por HTTPS confiável
+ou proxy TLS de desenvolvimento; não remova a validação HTTPS do cliente.
 
-         PORT=3000
-         NODE_ENV=development
+Na pasta mobile:
+  npm start
+  node node_modules/expo/bin/cli export --platform android --output-dir dist --no-minify
 
-         DB_TYPE=mongo
-         MONGO_URI=mongodb+srv://USUARIO:SENHA@seucluster.mongodb.net/agenda?appName=Agenda
+SecureStore, FileSystem, notificações e áudio exigem validar um build nativo
+compatível com Expo 54. O export gera JS/Hermes e assets, não um APK.
+A nova configuração de plugins/permissões exige recompilar o aplicativo.
+Confira em aparelho a migração da sessão, logout, lembretes, galeria e slider.
 
-         JWT_SECRET=gere_com_o_comando_abaixo
-         JWT_REFRESH_SECRET=gere_com_o_comando_abaixo
-         JWT_EXPIRES_IN=15m
-         JWT_REFRESH_EXPIRES_IN=7d
+5. PRODUÇÃO
+NODE_ENV=production. HTTPS na entrada e TLS no banco remoto.
+ALLOWED_ORIGINS: origens web exatas separadas por vírgula, nunca '*'.
+Apps nativos não dependem de CORS para autenticação.
+TRUST_PROXY: deixe vazio até conhecer os IPs/CIDRs dos proxies confiáveis;
+configure a lista real e impeça acesso direto não autorizado ao Node.
+Sem isso, o rate limiter pode agrupar todos os usuários pelo IP do proxy.
+O limiter é por processo (100 requisições/15 minutos); várias réplicas precisam
+de armazenamento compartilhado ou limite na borda. A fila preserva 429 para
+nova tentativa ao reconectar, retomar o app ou recarregar.
+Configure no Supabase confirmação de e-mail, limites de login/OTP e template
+recovery com código correspondente ao fluxo da interface. Verifique backups,
+RLS aplicável e retenção no ambiente; o código local não comprova esses controles.
 
-         ALLOWED_ORIGINS=*
+6. AUDITORIA
+Na pasta server ou mobile:
+  node ../scripts/audit-dependencies.cjs
 
-       Para gerar os segredos JWT, rode no terminal:
-         node -e "const c=require('crypto'); console.log(c.randomBytes(64).toString('hex'))"
-       (rode duas vezes — um para JWT_SECRET, outro para JWT_REFRESH_SECRET)
-
-  2.5. Descubra o IP local da máquina:
-         Windows: ipconfig  →  procure "Endereço IPv4" na interface de rede usada
-         Linux/Mac: ifconfig ou ip addr
-
-  2.6. Atualize o arquivo api-service.js com o IP local encontrado:
-         Linha 3:  const API_BASE = 'http://SEU_IP_LOCAL:3000';
-       Exemplo:    const API_BASE = 'http://192.168.1.10:3000';
-
-       IMPORTANTE: o celular e o computador devem estar na mesma rede Wi-Fi.
-                   Não use "localhost" aqui — o celular não consegue resolver.
-
-
-════════════════════════════════════════════════════════════════════
-  PASSO 3 — RODAR O BACKEND
-════════════════════════════════════════════════════════════════════
-
-  Abra um terminal na pasta do projeto e rode:
-
-    npm start
-
-  Você verá algo como:
-    Agenda API rodando na porta 3000 [development] [DB: mongo]
-
-  Mantenha esse terminal aberto enquanto usar o app.
-
-  Para desenvolvimento com reload automático:
-    npm run dev
-
-
-════════════════════════════════════════════════════════════════════
-  PASSO 4 — RODAR O FRONTEND (Expo)
-════════════════════════════════════════════════════════════════════
-
-  Abra um SEGUNDO terminal na pasta do projeto e rode:
-
-    npx expo start --clear
-
-  Aparecerá um QR Code no terminal.
-  Abra o Expo Go no celular e escaneie o QR Code.
-
-  ATENÇÃO: rode o backend (Passo 3) antes do frontend.
-
-
-════════════════════════════════════════════════════════════════════
-  RESUMO — ORDEM DE EXECUÇÃO
-════════════════════════════════════════════════════════════════════
-
-  Terminal 1:  npm start          ← backend (mantém aberto)
-  Terminal 2:  npx expo start     ← frontend (mantém aberto)
-  Celular:     escaneie o QR Code no Expo Go
-
-
-════════════════════════════════════════════════════════════════════
-  PROBLEMAS COMUNS
-════════════════════════════════════════════════════════════════════
-
-  "Cannot connect to server"
-    → Verifique se o IP em api-service.js bate com o IP atual da máquina
-    → Confirme que celular e PC estão na mesma rede Wi-Fi
-    → Verifique se o backend está rodando (Terminal 1)
-
-  "Expo Go incompatível"
-    → Atualize o Expo Go na Play Store / App Store
-
-  Erro de versão do Node
-    → Use nvm use 20 antes de rodar qualquer comando
-
-  "MongoServerError" ou falha ao conectar banco
-    → Verifique a MONGO_URI no .env
-    → Confirme que seu IP está liberado no Network Access do Atlas
-
-════════════════════════════════════════════════════════════════════
+A triagem identifica advisories específicos e tem validade até 05/10/2026.
+Não oculta o resultado npm audit. Consulte review/CORRECOES.md.

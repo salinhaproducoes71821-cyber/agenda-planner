@@ -12,5 +12,12 @@ Thumbs.db
 *.orig.*
 *.bak
 
-# Logo antiga — não usada no app.json atual
-LogoNovaCorEnovosHighlightsNovo.png
+# Segredos não entram no pacote de build.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+*.keystore
+*.jks

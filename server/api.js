@@ -35,14 +35,16 @@
 
 require('dotenv').config();
 
-const crypto    = require('crypto');
+const { randomUUID } = require('node:crypto');
+const path = require('node:path');
+const { createAuthenticator } = require('./auth');
+const { isDate, eventValidators, noteValidators, pageValidators, page } = require('./validation');
 const express   = require('express');
 const cors      = require('cors');
 const helmet    = require('helmet');
 const rateLimit = require('express-rate-limit');
-const jwt       = require('jsonwebtoken');
 const morgan    = require('morgan');
-const { v4: uuidv4 } = require('uuid');
+
 const { body, param, query, validationResult } = require('express-validator');
 
 // Importa a camada de banco de dados (Mongo ou MySQL, conforme DB_TYPE)
@@ -51,72 +53,22 @@ const db = require('./database');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
-// ─── Autenticação via Supabase ───────────────────────────────────────────────
-// O backend NÃO emite mais tokens: ele apenas VALIDA o access token do Supabase.
-// Login/cadastro/refresh são responsabilidade do Supabase, no app cliente.
-//
-// O Supabase pode assinar o access token de duas formas:
-//   • HS256 (legacy "JWT Secret", simétrico)  → valida com SUPABASE_JWT_SECRET
-//   • RS256/ES256 (signing keys, assimétrico)  → valida com a chave pública do
-//     JWKS do projeto (SUPABASE_URL/auth/v1/.well-known/jwks.json)
-// A escolha é automática pelo header `alg` do token, então funciona nos dois
-// casos sem reconfiguração.
-
 const IS_PROD = process.env.NODE_ENV === 'production';
-
-const SUPABASE_JWT_SECRET = process.env.SUPABASE_JWT_SECRET || '';
-const SUPABASE_URL        = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
-const JWKS_URL = SUPABASE_URL ? `${SUPABASE_URL}/auth/v1/.well-known/jwks.json` : '';
-
-const HAS_HS256 = SUPABASE_JWT_SECRET.length >= 20; // valida tokens HS256 legacy
-const HAS_JWKS  = JWKS_URL.length > 0;              // valida tokens assimétricos
-
-// Precisa de pelo menos uma forma de validar o token. Sem nenhuma, toda
-// requisição autenticada seria rejeitada — em produção isso é erro fatal.
-if (!HAS_HS256 && !HAS_JWKS) {
-  const msg =
-    'Nenhum método de validação de token configurado. Defina SUPABASE_JWT_SECRET ' +
-    '(Settings → API → JWT Settings → JWT Secret) e/ou SUPABASE_URL (para validar ' +
-    'tokens assinados por chave assimétrica via JWKS).';
-  if (IS_PROD) { console.error(`[FATAL] ${msg}`); process.exit(1); }
-  console.warn(`[AVISO] ${msg}`);
-}
-
-// Cache simples do JWKS (chaves públicas do Supabase). Recarrega quando expira
-// o TTL ou quando aparece um `kid` desconhecido (rotação de chave).
-let _jwksCache = { keys: [], fetchedAt: 0 };
-const JWKS_TTL_MS = 10 * 60 * 1000;
-
-async function getSupabasePublicKey(kid) {
-  if (!JWKS_URL) throw new Error('SUPABASE_URL não configurado para validação assimétrica.');
-  const fresh = Date.now() - _jwksCache.fetchedAt < JWKS_TTL_MS;
-  let jwk = fresh ? _jwksCache.keys.find(k => k.kid === kid) : null;
-  if (!jwk) {
-    const res = await fetch(JWKS_URL);
-    if (!res.ok) throw new Error(`Falha ao buscar JWKS (${res.status}).`);
-    const data = await res.json();
-    _jwksCache = { keys: Array.isArray(data.keys) ? data.keys : [], fetchedAt: Date.now() };
-    jwk = _jwksCache.keys.find(k => k.kid === kid);
-  }
-  if (!jwk) throw new Error('Chave de assinatura não encontrada no JWKS.');
-  return crypto.createPublicKey({ key: jwk, format: 'jwk' });
-}
+const authenticate = createAuthenticator();
 
 // ═══════════════════════════════════════════════════════════════════════════
 // MIDDLEWARES GLOBAIS
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Confia em exatamente 1 proxy (Railway/Heroku) para que req.ip e o rate-limit
-// vejam o IP real do cliente. NUNCA usar `true`: permitiria spoof de
-// X-Forwarded-For e bypass total do rate limiting.
-app.set('trust proxy', 1);
+// Confie apenas nos endereços/CIDRs dos proxies controlados pelo deploy.
+app.set('trust proxy', process.env.TRUST_PROXY ? process.env.TRUST_PROXY.split(',').map(v => v.trim()) : false);
 
 // Cabeçalhos de segurança HTTP
 app.use(helmet());
 
 // Logs (desabilitado em testes)
 if (process.env.NODE_ENV !== 'test') {
-  app.use(morgan('combined'));
+  app.use(morgan(':method :status :response-time ms'));
 }
 
 // CORS — allowlist explícita (nunca '*'). Sem ALLOWED_ORIGINS:
@@ -141,10 +93,11 @@ app.use(cors({
 }));
 
 // Parse JSON — limite 10 KB para evitar ataques de payload gigante
+app.use('/api/notes', express.json({ limit: '320kb' }));
 app.use(express.json({ limit: '10kb' }));
 
 // Arquivos estáticos de música (sem autenticação)
-app.use('/music', express.static('public/music'));
+app.use('/music', express.static(path.join(__dirname, 'public/music')));
 
 // ─── Rate Limiting ───────────────────────────────────────────────────────────
 
@@ -164,11 +117,11 @@ app.use('/api/', generalLimiter);
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Remove caracteres perigosos para evitar XSS/injection
+ * Normaliza espaços sem destruir pontuação legítima.
  */
 const sanitize = (str) => {
   if (typeof str !== 'string') return '';
-  return str.replace(/[<>"'`]/g, '').trim();
+  return str.trim();
 };
 
 /**
@@ -188,78 +141,6 @@ const validate = (req, res, next) => {
 // MIDDLEWARE DE AUTENTICAÇÃO
 // ═══════════════════════════════════════════════════════════════════════════
 
-const authenticate = async (req, res, next) => {
-  const auth = req.headers['authorization'];
-  if (!auth || !auth.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Token de autenticação ausente.' });
-  }
-  const token = auth.slice(7);
-  try {
-    const decoded = jwt.decode(token, { complete: true });
-    const alg = decoded?.header?.alg;
-    if (!alg) throw new Error('Token malformado.');
-
-    const opts = { audience: 'authenticated' };
-    let payload;
-    if (alg === 'HS256') {
-      // Token assinado com o legacy JWT Secret (simétrico).
-      if (!HAS_HS256) throw new Error('Token HS256 recebido, mas SUPABASE_JWT_SECRET não está configurado.');
-      payload = jwt.verify(token, SUPABASE_JWT_SECRET, { ...opts, algorithms: ['HS256'] });
-    } else if (alg === 'RS256' || alg === 'ES256') {
-      // Token assinado com signing key assimétrica — valida via JWKS.
-      const key = await getSupabasePublicKey(decoded.header.kid);
-      payload = jwt.verify(token, key, { ...opts, algorithms: [alg] });
-    } else {
-      throw new Error(`Algoritmo de assinatura não suportado: ${alg}`);
-    }
-
-    req.userId    = payload.sub;                     // UID do Supabase (UUID)
-    req.userEmail = payload.email || '';
-    req.userName  = payload.user_metadata?.name || '';
-    next();
-  } catch (err) {
-    // Log de diagnóstico (server-side apenas — não vaza detalhes ao cliente).
-    let hdr = {};
-    try { hdr = jwt.decode(token, { complete: true })?.header || {}; } catch {}
-    console.warn(
-      `[auth] falha na validação: ${err.name || 'Error'}: ${err.message} ` +
-      `| alg=${hdr.alg || '?'} kid=${hdr.kid || '-'} ` +
-      `| HAS_HS256=${HAS_HS256} HAS_JWKS=${HAS_JWKS}`
-    );
-    const msg = err.name === 'TokenExpiredError'
-      ? 'Token expirado. Faça login novamente.'
-      : 'Token inválido.';
-    return res.status(401).json({ error: msg });
-  }
-};
-
-// ═══════════════════════════════════════════════════════════════════════════
-// VALIDADORES REUTILIZÁVEIS
-// ═══════════════════════════════════════════════════════════════════════════
-
-const eventValidators = [
-  body('titulo')
-    .trim()
-    .isLength({ min: 1, max: 120 }).withMessage('Título obrigatório (máx. 120 chars)'),
-  body('data')
-    .matches(/^\d{4}-\d{2}-\d{2}$/).withMessage('Data no formato AAAA-MM-DD'),
-  body('hora')
-    .matches(/^\d{2}:\d{2}$/).withMessage('Hora no formato HH:MM'),
-  body('cor')
-    .optional()
-    .matches(/^#[0-9a-fA-F]{6}$/).withMessage('Cor hexadecimal inválida'),
-  body('lembrete')
-    .optional()
-    .isBoolean(),
-  body('alarmSound')
-    .optional()
-    .isIn(['gentle', 'birds', 'piano', 'classic', 'vibrate'])
-    .withMessage('Som de alarme inválido'),
-  body('descricao')
-    .optional()
-    .isLength({ max: 500 }).withMessage('Descrição máx. 500 chars'),
-];
-
 // ═══════════════════════════════════════════════════════════════════════════
 // ROTAS — USUÁRIO / PERFIL
 //
@@ -276,7 +157,7 @@ app.get('/api/users/me', authenticate, async (req, res) => {
     });
     return res.json({ id: profile.id, name: profile.name, email: profile.email, avatar: profile.avatar || null });
   } catch (err) {
-    console.error('[GET /users/me]', err);
+    console.error('[GET /users/me]', err.name);
     return res.status(500).json({ error: 'Erro ao buscar usuário.' });
   }
 });
@@ -284,7 +165,7 @@ app.get('/api/users/me', authenticate, async (req, res) => {
 // PUT /api/users/profile
 app.put('/api/users/profile',
   authenticate,
-  [body('name').trim().isLength({ min: 2, max: 80 }).withMessage('Nome: 2–80 caracteres')],
+  [body('name').isString().bail().trim().isLength({ min: 2, max: 80 }).withMessage('Nome: 2–80 caracteres')],
   validate,
   async (req, res) => {
     try {
@@ -301,11 +182,12 @@ app.put('/api/users/avatar',
   authenticate,
   [
     body('uri')
+      .isString().bail()
       .trim()
       .notEmpty().withMessage('URI da imagem inválida')
       .isLength({ max: 2048 }).withMessage('URI da imagem muito longa (máx. 2048).')
-      .not().matches(/^\s*(javascript|vbscript|data:text\/html)/i)
-      .withMessage('Esquema de URI não permitido.'),
+      .isURL({ protocols: ['https'], require_protocol: true, disallow_auth: true })
+      .withMessage('Avatar remoto deve usar uma URL HTTPS válida.'),
   ],
   validate,
   async (req, res) => {
@@ -325,13 +207,13 @@ app.put('/api/users/avatar',
 // GET /api/events?mes=YYYY-MM
 app.get('/api/events',
   authenticate,
-  [query('mes').optional().matches(/^\d{4}-\d{2}$/).withMessage('Mês no formato YYYY-MM')],
+  [...pageValidators, query('mes').optional().custom(value => typeof value === 'string' && isDate(value + '-01')).withMessage('Mês inválido; use YYYY-MM')],
   validate,
   async (req, res) => {
     try {
       const events = req.query.mes
-        ? await db.getEventsByMonth(req.userId, req.query.mes)
-        : await db.getEventsByUser(req.userId);
+        ? await db.getEventsByMonth(req.userId, req.query.mes, page(req))
+        : await db.getEventsByUser(req.userId, page(req));
       return res.json(events);
     } catch (err) {
       return res.status(500).json({ error: 'Erro ao buscar eventos.' });
@@ -342,7 +224,7 @@ app.get('/api/events',
 // GET /api/events/:id
 app.get('/api/events/:id',
   authenticate,
-  [param('id').notEmpty()],
+  [param('id').isUUID()],
   validate,
   async (req, res) => {
     try {
@@ -360,7 +242,7 @@ app.post('/api/events', authenticate, eventValidators, validate, async (req, res
   try {
     const { titulo, data, hora, cor, lembrete, alarmSound, descricao } = req.body;
     const event = await db.createEvent({
-      id:         uuidv4(),
+      id:         req.body.id || randomUUID(),
       userId:     req.userId,
       titulo:     sanitize(titulo),
       data,
@@ -372,14 +254,14 @@ app.post('/api/events', authenticate, eventValidators, validate, async (req, res
     });
     return res.status(201).json(event);
   } catch (err) {
-    return res.status(500).json({ error: 'Erro ao criar evento.' });
+    return res.status(err.status === 409 ? 409 : 500).json({ error: err.status === 409 ? 'Identificador indisponível.' : 'Erro ao criar evento.' });
   }
 });
 
 // PUT /api/events/:id
 app.put('/api/events/:id',
   authenticate,
-  [param('id').notEmpty(), ...eventValidators],
+  [param('id').isUUID(), ...eventValidators],
   validate,
   async (req, res) => {
     try {
@@ -406,7 +288,7 @@ app.put('/api/events/:id',
 // DELETE /api/events/:id
 app.delete('/api/events/:id',
   authenticate,
-  [param('id').notEmpty()],
+  [param('id').isUUID()],
   validate,
   async (req, res) => {
     try {
@@ -427,6 +309,7 @@ app.delete('/api/events/:id',
 app.get('/api/notes',
   authenticate,
   [
+    ...pageValidators,
     query('q').optional().isString().withMessage('q inválido').trim().isLength({ max: 200 }),
     query('tag').optional().isString().withMessage('tag inválida').trim().isLength({ max: 50 }),
   ],
@@ -434,6 +317,7 @@ app.get('/api/notes',
   async (req, res) => {
   try {
     const notes = await db.getNotesByUser(req.userId, {
+      ...page(req),
       q:   req.query.q,
       tag: req.query.tag,
     });
@@ -444,7 +328,7 @@ app.get('/api/notes',
 });
 
 // GET /api/notes/:id
-app.get('/api/notes/:id', authenticate, async (req, res) => {
+app.get('/api/notes/:id', authenticate, [param('id').isUUID()], validate, async (req, res) => {
   try {
     const note = await db.getNoteById(req.params.id, req.userId);
     if (!note) return res.status(404).json({ error: 'Nota não encontrada.' });
@@ -457,17 +341,13 @@ app.get('/api/notes/:id', authenticate, async (req, res) => {
 // POST /api/notes
 app.post('/api/notes',
   authenticate,
-  [
-    body('titulo').optional().isLength({ max: 200 }).withMessage('Título máx. 200 chars'),
-    body('conteudo').optional().isLength({ max: 50000 }).withMessage('Conteúdo máx. 50.000 chars'),
-    body('tags').optional().isArray({ max: 20 }).withMessage('Máx. 20 tags'),
-  ],
+  noteValidators,
   validate,
   async (req, res) => {
     try {
       const { titulo = '', conteudo = '', tags = [] } = req.body;
       const note = await db.createNote({
-        id:        uuidv4(),
+        id:        req.body.id || randomUUID(),
         userId:    req.userId,
         titulo:    sanitize(titulo),
         conteudo,
@@ -476,7 +356,7 @@ app.post('/api/notes',
       });
       return res.status(201).json(note);
     } catch (err) {
-      return res.status(500).json({ error: 'Erro ao criar nota.' });
+      return res.status(err.status === 409 ? 409 : 500).json({ error: err.status === 409 ? 'Identificador indisponível.' : 'Erro ao criar nota.' });
     }
   }
 );
@@ -484,12 +364,7 @@ app.post('/api/notes',
 // PUT /api/notes/:id
 app.put('/api/notes/:id',
   authenticate,
-  [
-    param('id').notEmpty(),
-    body('titulo').optional().isLength({ max: 200 }),
-    body('conteudo').optional().isLength({ max: 50000 }),
-    body('tags').optional().isArray({ max: 20 }),
-  ],
+  [param('id').isUUID(), ...noteValidators],
   validate,
   async (req, res) => {
     try {
@@ -511,7 +386,7 @@ app.put('/api/notes/:id',
 );
 
 // DELETE /api/notes/:id
-app.delete('/api/notes/:id', authenticate, async (req, res) => {
+app.delete('/api/notes/:id', authenticate, [param('id').isUUID()], validate, async (req, res) => {
   try {
     const deleted = await db.deleteNote(req.params.id, req.userId);
     if (!deleted) return res.status(404).json({ error: 'Nota não encontrada.' });
@@ -526,7 +401,7 @@ app.delete('/api/notes/:id', authenticate, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // GET /api/moods?days=14
-app.get('/api/moods', authenticate, async (req, res) => {
+app.get('/api/moods', authenticate, [query('days').optional().isInt({ min: 1, max: 90 }).toInt()], validate, async (req, res) => {
   try {
     const days  = Math.min(parseInt(req.query.days, 10) || 14, 90);
     const moods = await db.getMoodsByUser(req.userId, days);
@@ -541,7 +416,7 @@ app.post('/api/moods',
   authenticate,
   [
     body('nivel').isInt({ min: 1, max: 5 }).withMessage('Nível deve ser entre 1 e 5'),
-    body('data').optional().matches(/^\d{4}-\d{2}-\d{2}$/).withMessage('Data inválida'),
+    body('data').optional().custom(isDate).withMessage('Data inválida'),
   ],
   validate,
   async (req, res) => {
@@ -571,22 +446,23 @@ app.use((req, res) => {
 // ─── Error handler global ────────────────────────────────────────────────────
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
-  console.error('[ERRO NÃO TRATADO]', err);
-  res.status(500).json({ error: 'Erro interno do servidor.' });
+  const status = err.type === 'entity.too.large' ? 413 : err.type === 'entity.parse.failed' ? 400 : 500;
+  if (status === 500) console.error('[request] internal error', err.name);
+  res.status(status).json({ error: status === 413 ? 'Conteúdo excede o limite permitido.' : status === 400 ? 'JSON inválido.' : 'Erro interno do servidor.' });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
 // INICIALIZAÇÃO
 // ═══════════════════════════════════════════════════════════════════════════
 
-(async () => {
+if (require.main === module) (async () => {
   try {
     await db.connect();
     app.listen(PORT, () => {
       console.log(`🗓  Agenda API rodando na porta ${PORT} [${process.env.NODE_ENV || 'development'}] [DB: ${process.env.DB_TYPE || 'mongo'}]`);
     });
   } catch (err) {
-    console.error('❌ Falha ao conectar ao banco de dados:', err);
+    console.error('❌ Falha ao conectar ao banco de dados:', err.name);
     process.exit(1);
   }
 })();

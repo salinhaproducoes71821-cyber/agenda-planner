@@ -1,0 +1,16 @@
+node_modules/
+.expo/
+dist/
+web-build/
+coverage/
+.worktrees/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+*.keystore
+*.jks
+*.log
+.DS_Store
